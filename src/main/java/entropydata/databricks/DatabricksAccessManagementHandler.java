@@ -232,11 +232,24 @@ public class DatabricksAccessManagementHandler implements EntropyDataEventHandle
   }
 
   private boolean hostnamesMatch(String serverHost) {
-    if (serverHost == null) {
-      return false;
+    String configHost = normalizeHost(this.workspaceClient.config().getHost());
+    String normalizedServerHost = normalizeHost(serverHost);
+    return normalizedServerHost != null && Objects.equals(configHost, normalizedServerHost);
+  }
+
+  private static String normalizeHost(String url) {
+    if (url == null) {
+      return null;
     }
-    String configHost = this.workspaceClient.config().getHost();
-    return Objects.equals(URI.create(configHost).getHost(), URI.create(serverHost).getHost());
+    // ODCS Databricks servers may store the host without a scheme (e.g. dbc-xxx.cloud.databricks.com),
+    // for which URI.getHost() returns null; assume https so the host component parses either way.
+    String withScheme = url.contains("://") ? url : "https://" + url;
+    try {
+      String host = URI.create(withScheme).getHost();
+      return host == null ? null : host.toLowerCase();
+    } catch (IllegalArgumentException e) {
+      return null;
+    }
   }
 
   void grantPermissions(Access access, Map<String, String> server) {

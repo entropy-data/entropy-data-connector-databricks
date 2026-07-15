@@ -85,6 +85,22 @@ class DatabricksAccessManagementHandlerTest {
   }
 
   @Test
+  void matchesWhenContractServerHostHasNoScheme() throws Exception {
+    when(accessApi.getAccess("a-1")).thenReturn(activeUserAccess());
+    when(dataProductsApi.getDataProduct("provider-dp")).thenReturn(loadYaml("provider-dp-databricks-odps.yaml"));
+    when(dataContractsApi.getDataContract("my-contract")).thenReturn(loadDataContract("datacontract-databricks-schemeless-host.yaml"));
+    when(workspaceClient.config().getHost()).thenReturn("https://dbc-abc.cloud.databricks.com");
+
+    var event = new AccessActivatedEvent();
+    event.setId("a-1");
+    handler.onAccessActivatedEvent(event);
+
+    // a scheme-less server host (as in the ODCS schema example) still matches the workspace host
+    verify(workspaceClient.schemas()).get("my_catalog.my_schema");
+    verify(workspaceClient.grants()).update(any(UpdatePermissions.class));
+  }
+
+  @Test
   void skipsWhenServerHostDoesNotMatchWorkspace() throws Exception {
     when(accessApi.getAccess("a-1")).thenReturn(activeUserAccess());
     when(dataProductsApi.getDataProduct("provider-dp")).thenReturn(loadYaml("provider-dp-databricks-odps.yaml"));
