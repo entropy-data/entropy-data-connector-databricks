@@ -1,4 +1,4 @@
-package datameshmanager.databricks;
+package entropydata.databricks;
 
 import com.databricks.sdk.WorkspaceClient;
 import com.databricks.sdk.service.catalog.CatalogInfo;
@@ -6,12 +6,12 @@ import com.databricks.sdk.service.catalog.CatalogType;
 import com.databricks.sdk.service.catalog.ListCatalogsRequest;
 import com.databricks.sdk.service.catalog.SchemaInfo;
 import com.databricks.sdk.service.catalog.TableInfo;
-import datameshmanager.sdk.DataMeshManagerAssetsProvider;
-import datameshmanager.sdk.DataMeshManagerStateRepository;
-import datameshmanager.sdk.client.model.Asset;
-import datameshmanager.sdk.client.model.AssetColumnsInner;
-import datameshmanager.sdk.client.model.AssetInfo;
-import datameshmanager.sdk.client.model.AssetRelationshipsInner;
+import entropydata.sdk.EntropyDataAssetsProvider;
+import entropydata.sdk.EntropyDataStateRepository;
+import entropydata.sdk.client.model.Asset;
+import entropydata.sdk.client.model.AssetColumnsInner;
+import entropydata.sdk.client.model.AssetInfo;
+import entropydata.sdk.client.model.AssetRelationshipsInner;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -19,18 +19,18 @@ import java.util.Optional;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-public class DatabricksAssetsSupplier implements DataMeshManagerAssetsProvider {
+public class DatabricksAssetsSupplier implements EntropyDataAssetsProvider {
 
   private static final Logger log = LoggerFactory.getLogger(DatabricksAssetsSupplier.class);
 
   private final WorkspaceClient workspaceClient;
-  private final DataMeshManagerStateRepository dataMeshManagerStateRepository;
+  private final EntropyDataStateRepository entropyDataStateRepository;
   private final DatabricksProperties databricksProperties;
 
-  public DatabricksAssetsSupplier(WorkspaceClient workspaceClient, DataMeshManagerStateRepository dataMeshManagerStateRepository,
+  public DatabricksAssetsSupplier(WorkspaceClient workspaceClient, EntropyDataStateRepository entropyDataStateRepository,
       DatabricksProperties databricksProperties) {
     this.workspaceClient = workspaceClient;
-    this.dataMeshManagerStateRepository = dataMeshManagerStateRepository;
+    this.entropyDataStateRepository = entropyDataStateRepository;
     this.databricksProperties = databricksProperties;
   }
 
@@ -76,7 +76,7 @@ public class DatabricksAssetsSupplier implements DataMeshManagerAssetsProvider {
   }
 
   private Long getLastUpdatedAt() {
-    Map<String, Object> state = dataMeshManagerStateRepository.getState();
+    Map<String, Object> state = entropyDataStateRepository.getState();
     var lastUpdatedAt = state.get("lastUpdatedAt");
     if (lastUpdatedAt == null) {
       return 0L;
@@ -103,7 +103,7 @@ public class DatabricksAssetsSupplier implements DataMeshManagerAssetsProvider {
 
   private void setLastUpdatedAt(Long databricksLastUpdatedAtThisRunMax) {
     Map<String, Object> state = Map.of("lastUpdatedAt", databricksLastUpdatedAtThisRunMax);
-    dataMeshManagerStateRepository.saveState(state);
+    entropyDataStateRepository.saveState(state);
   }
 
   private Optional<Asset> catalogToAsset(CatalogInfo catalog, Long databricksLastUpdatedAt) {
