@@ -1,0 +1,16 @@
+apiVersion: v1.0.0
+kind: DataProduct
+id: provider-dp
+name: Provider Data Product
+status: active
+outputPorts:
+  - id: op-databricks
+    name: databricks-output
+    type: databricks
+    contractId: my-contract
+    customProperties:
+      - property: server
+        value:
+          host: https://dbc-abc.cloud.databricks.com
+          catalog: port_catalog
+          schema: port_schema

@@ -1,9 +1,9 @@
-package datameshmanager.databricks;
+package entropydata.databricks;
 
 import java.time.Duration;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 
-@ConfigurationProperties(prefix = "datameshmanager.client.databricks")
+@ConfigurationProperties(prefix = "entropydata.client.databricks")
 public record DatabricksProperties(
     WorkspaceProperties workspace,
     AccountProperties account,
