@@ -16,19 +16,14 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import entropydata.sdk.EntropyDataClient;
 import entropydata.sdk.client.ApiClient;
 import entropydata.sdk.client.api.AccessApi;
-import entropydata.sdk.client.api.DataContractsApi;
 import entropydata.sdk.client.api.DataProductsApi;
 import entropydata.sdk.client.model.Access;
 import entropydata.sdk.client.model.AccessActivatedEvent;
 import entropydata.sdk.client.model.AccessProvider;
-import entropydata.sdk.client.model.DataContract;
-import entropydata.sdk.client.model.DataContractServersValue;
 import entropydata.sdk.client.model.DataUsageAgreementConsumer;
 import entropydata.sdk.client.model.DataUsageAgreementInfo;
 import java.io.IOException;
 import java.io.InputStream;
-import java.util.LinkedHashMap;
-import java.util.List;
 import java.util.Map;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -39,7 +34,7 @@ class DatabricksAccessManagementHandlerTest {
   private EntropyDataClient client;
   private AccessApi accessApi;
   private DataProductsApi dataProductsApi;
-  private DataContractsApi dataContractsApi;
+  private ApiClient apiClient;
   private ObjectMapper objectMapper;
 
   private WorkspaceClient workspaceClient;
@@ -52,18 +47,16 @@ class DatabricksAccessManagementHandlerTest {
     client = mock(EntropyDataClient.class);
     accessApi = mock(AccessApi.class);
     dataProductsApi = mock(DataProductsApi.class);
-    dataContractsApi = mock(DataContractsApi.class);
     workspaceClient = mock(WorkspaceClient.class, RETURNS_DEEP_STUBS);
     accountClient = mock(AccountClient.class, RETURNS_DEEP_STUBS);
 
-    var apiClient = mock(ApiClient.class);
+    apiClient = mock(ApiClient.class);
     objectMapper = new ObjectMapper().configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false);
 
     when(client.getApiClient()).thenReturn(apiClient);
     when(apiClient.getObjectMapper()).thenReturn(objectMapper);
     when(client.getAccessApi()).thenReturn(accessApi);
     when(client.getDataProductsApi()).thenReturn(dataProductsApi);
-    when(client.getDataContractsApi()).thenReturn(dataContractsApi);
 
     handler = new DatabricksAccessManagementHandler(client, workspaceClient, accountClient);
   }
@@ -72,7 +65,7 @@ class DatabricksAccessManagementHandlerTest {
   void grantsOnCatalogAndSchemaResolvedFromOdcsContract() throws Exception {
     when(accessApi.getAccess("a-1")).thenReturn(activeUserAccess());
     when(dataProductsApi.getDataProduct("provider-dp")).thenReturn(loadYaml("provider-dp-databricks-odps.yaml"));
-    when(dataContractsApi.getDataContract("my-contract")).thenReturn(loadDataContract("datacontract-databricks.yaml"));
+    stubDataContract("datacontract-databricks.yaml");
     when(workspaceClient.config().getHost()).thenReturn("https://dbc-abc.cloud.databricks.com");
 
     var event = new AccessActivatedEvent();
@@ -85,10 +78,26 @@ class DatabricksAccessManagementHandlerTest {
   }
 
   @Test
+  void grantsOnCatalogAndSchemaResolvedFromDcsContract() throws Exception {
+    when(accessApi.getAccess("a-1")).thenReturn(activeUserAccess());
+    when(dataProductsApi.getDataProduct("provider-dp")).thenReturn(loadYaml("provider-dp-databricks-odps.yaml"));
+    stubDataContract("datacontract-databricks-dcs.yaml");
+    when(workspaceClient.config().getHost()).thenReturn("https://dbc-abc.cloud.databricks.com");
+
+    var event = new AccessActivatedEvent();
+    event.setId("a-1");
+    handler.onAccessActivatedEvent(event);
+
+    // DCS contracts carry servers as a map keyed by server name
+    verify(workspaceClient.schemas()).get("my_catalog.my_schema");
+    verify(workspaceClient.grants()).update(any(UpdatePermissions.class));
+  }
+
+  @Test
   void matchesWhenContractServerHostHasNoScheme() throws Exception {
     when(accessApi.getAccess("a-1")).thenReturn(activeUserAccess());
     when(dataProductsApi.getDataProduct("provider-dp")).thenReturn(loadYaml("provider-dp-databricks-odps.yaml"));
-    when(dataContractsApi.getDataContract("my-contract")).thenReturn(loadDataContract("datacontract-databricks-schemeless-host.yaml"));
+    stubDataContract("datacontract-databricks-schemeless-host.yaml");
     when(workspaceClient.config().getHost()).thenReturn("https://dbc-abc.cloud.databricks.com");
 
     var event = new AccessActivatedEvent();
@@ -104,7 +113,7 @@ class DatabricksAccessManagementHandlerTest {
   void skipsWhenServerHostDoesNotMatchWorkspace() throws Exception {
     when(accessApi.getAccess("a-1")).thenReturn(activeUserAccess());
     when(dataProductsApi.getDataProduct("provider-dp")).thenReturn(loadYaml("provider-dp-databricks-odps.yaml"));
-    when(dataContractsApi.getDataContract("my-contract")).thenReturn(loadDataContract("datacontract-databricks.yaml"));
+    stubDataContract("datacontract-databricks.yaml");
     when(workspaceClient.config().getHost()).thenReturn("https://dbc-other.cloud.databricks.com");
 
     var event = new AccessActivatedEvent();
@@ -113,6 +122,45 @@ class DatabricksAccessManagementHandlerTest {
 
     verify(workspaceClient.schemas(), never()).get(anyString());
     verify(workspaceClient.grants(), never()).update(any(UpdatePermissions.class));
+  }
+
+  @Test
+  void fallsBackToOutputPortServerWhenContractFetchFails() throws Exception {
+    when(accessApi.getAccess("a-1")).thenReturn(activeUserAccess());
+    when(dataProductsApi.getDataProduct("provider-dp"))
+        .thenReturn(loadYaml("provider-dp-databricks-odps-port-server.yaml"));
+    when(apiClient.<Map<String, Object>>invokeAPI(anyString(), anyString(), any(), any(), any(), any(),
+        any(), any(), any(), any(), any(), any(), any()))
+        .thenThrow(new RuntimeException("contract not found"));
+    when(workspaceClient.config().getHost()).thenReturn("https://dbc-abc.cloud.databricks.com");
+
+    var event = new AccessActivatedEvent();
+    event.setId("a-1");
+    handler.onAccessActivatedEvent(event);
+
+    verify(workspaceClient.schemas()).get("port_catalog.port_schema");
+    verify(workspaceClient.grants()).update(any(UpdatePermissions.class));
+  }
+
+  @Test
+  void skipsWhenResolvedServerHasNoCatalog() throws Exception {
+    when(accessApi.getAccess("a-1")).thenReturn(activeUserAccess());
+    when(dataProductsApi.getDataProduct("provider-dp")).thenReturn(loadYaml("provider-dp-databricks-odps.yaml"));
+    stubDataContract("datacontract-databricks-no-catalog.yaml");
+    when(workspaceClient.config().getHost()).thenReturn("https://dbc-abc.cloud.databricks.com");
+
+    var event = new AccessActivatedEvent();
+    event.setId("a-1");
+    handler.onAccessActivatedEvent(event);
+
+    verify(workspaceClient.schemas(), never()).get(anyString());
+    verify(workspaceClient.grants(), never()).update(any(UpdatePermissions.class));
+  }
+
+  private void stubDataContract(String name) throws Exception {
+    when(apiClient.<Map<String, Object>>invokeAPI(anyString(), anyString(), any(), any(), any(), any(),
+        any(), any(), any(), any(), any(), any(), any()))
+        .thenReturn(loadYaml(name));
   }
 
   private Access activeUserAccess() {
@@ -129,32 +177,6 @@ class DatabricksAccessManagementHandlerTest {
     try (InputStream is = DatabricksAccessManagementHandlerTest.class.getResourceAsStream("/fixtures/" + name)) {
       return new Yaml().load(is);
     }
-  }
-
-  /**
-   * Load an ODCS data contract YAML and convert to the SDK DataContract model. ODCS uses servers as a
-   * list; the SDK model uses servers as a map keyed by server name, matching what the API returns after
-   * deserialization.
-   */
-  @SuppressWarnings("unchecked")
-  private DataContract loadDataContract(String name) throws IOException {
-    var yaml = loadYaml(name);
-    var servers = yaml.get("servers");
-    if (servers instanceof List) {
-      var serversMap = new LinkedHashMap<String, DataContractServersValue>();
-      for (var entry : (List<Map<String, Object>>) servers) {
-        var serverName = (String) entry.get("server");
-        var serverValue = new DataContractServersValue();
-        entry.forEach((k, v) -> {
-          if (!"server".equals(k)) {
-            serverValue.put(k, v);
-          }
-        });
-        serversMap.put(serverName, serverValue);
-      }
-      yaml.put("servers", serversMap);
-    }
-    return objectMapper.convertValue(yaml, DataContract.class);
   }
 
 }

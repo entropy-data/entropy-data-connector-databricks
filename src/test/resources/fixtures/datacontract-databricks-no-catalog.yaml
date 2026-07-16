@@ -1,0 +1,11 @@
+apiVersion: v3.1.0
+kind: DataContract
+id: my-contract
+name: Test Contract
+version: 1.0.0
+status: active
+servers:
+  - server: databricks-server
+    type: databricks
+    host: https://dbc-abc.cloud.databricks.com
+    schema: my_schema
