@@ -166,10 +166,10 @@ public class DatabricksAccessManagementHandler implements EntropyDataEventHandle
   }
 
   /**
-   * Resolves the server from the data contract linked by the output port. A Databricks server carries
-   * {@code host}, {@code catalog} and {@code schema}. The contract is fetched untyped, because the typed
-   * SDK model only supports DCS-shaped servers (a map keyed by server name) and fails to deserialize ODCS
-   * contracts, where servers is a list carrying the name in the {@code server} field.
+   * Resolves the server from the ODCS data contract linked by the output port: servers is a list carrying
+   * the name in the {@code server} field, and a Databricks server carries {@code host}, {@code catalog}
+   * and {@code schema}. The contract is fetched untyped to stay independent of the bundled SDK model
+   * version.
    */
   @SuppressWarnings("unchecked")
   private Map<String, String> resolveServerFromContract(Map<String, Object> outputPort) {
@@ -197,20 +197,6 @@ public class DatabricksAccessManagementHandler implements EntropyDataEventHandle
     }
 
     var servers = dataContract.get("servers");
-
-    // Data Contract Specification (DCS): servers is a Map<String, Server>
-    if (servers instanceof Map) {
-      var serversMap = (Map<String, Map<String, Object>>) servers;
-      Map<String, Object> server;
-      if (contractServerName != null && serversMap.containsKey(contractServerName)) {
-        server = serversMap.get(contractServerName);
-      } else {
-        server = serversMap.values().stream().findFirst().orElse(null);
-      }
-      if (server != null) {
-        return toStringMap(server);
-      }
-    }
 
     // Open Data Contract Standard (ODCS): servers is a List with "server" field as the name
     if (servers instanceof List) {

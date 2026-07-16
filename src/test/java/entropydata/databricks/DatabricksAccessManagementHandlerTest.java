@@ -78,22 +78,6 @@ class DatabricksAccessManagementHandlerTest {
   }
 
   @Test
-  void grantsOnCatalogAndSchemaResolvedFromDcsContract() throws Exception {
-    when(accessApi.getAccess("a-1")).thenReturn(activeUserAccess());
-    when(dataProductsApi.getDataProduct("provider-dp")).thenReturn(loadYaml("provider-dp-databricks-odps.yaml"));
-    stubDataContract("datacontract-databricks-dcs.yaml");
-    when(workspaceClient.config().getHost()).thenReturn("https://dbc-abc.cloud.databricks.com");
-
-    var event = new AccessActivatedEvent();
-    event.setId("a-1");
-    handler.onAccessActivatedEvent(event);
-
-    // DCS contracts carry servers as a map keyed by server name
-    verify(workspaceClient.schemas()).get("my_catalog.my_schema");
-    verify(workspaceClient.grants()).update(any(UpdatePermissions.class));
-  }
-
-  @Test
   void matchesWhenContractServerHostHasNoScheme() throws Exception {
     when(accessApi.getAccess("a-1")).thenReturn(activeUserAccess());
     when(dataProductsApi.getDataProduct("provider-dp")).thenReturn(loadYaml("provider-dp-databricks-odps.yaml"));
