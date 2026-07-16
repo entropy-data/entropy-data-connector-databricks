@@ -50,6 +50,7 @@ docker run \
 When an Access Request has been approved by the data product owner, and the start date is reached, Entropy Data will publish an `AccessActivatedEvent`. When an end date is defined and reached, Entropy Data will publish an `AccessDeactivatedEvent`. The connector listens for these events and grants access to the data consumer in Databricks.
 
 The Databricks server (host, catalog, and schema) is resolved from the data contract linked by the provider output port.
+The linked data contract must be in ODCS (Open Data Contract Standard) format; the legacy Data Contract Specification (DCS) is not supported.
 
 ### Consumer Type: Data Product
 
