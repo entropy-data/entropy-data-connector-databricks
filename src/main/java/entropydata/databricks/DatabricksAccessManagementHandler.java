@@ -13,6 +13,7 @@ import com.databricks.sdk.service.iam.ComplexValue;
 import com.databricks.sdk.service.iam.Group;
 import com.databricks.sdk.service.iam.ListAccountGroupsRequest;
 import com.databricks.sdk.service.iam.ServicePrincipal;
+import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import entropydata.sdk.EntropyDataClient;
 import entropydata.sdk.EntropyDataEventHandler;
@@ -20,11 +21,11 @@ import entropydata.sdk.client.ApiException;
 import entropydata.sdk.client.model.Access;
 import entropydata.sdk.client.model.AccessActivatedEvent;
 import entropydata.sdk.client.model.AccessDeactivatedEvent;
-import entropydata.sdk.client.model.DataContract;
 import entropydata.sdk.client.model.DataProduct;
 import entropydata.sdk.client.model.Team;
 import entropydata.sdk.client.model.TeamMembersInner;
 import java.net.URI;
+import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
@@ -94,10 +95,11 @@ public class DatabricksAccessManagementHandler implements EntropyDataEventHandle
 
   /**
    * Resolves the Databricks server (catalog/schema/host) for the provider output port of this access.
-   * The server details live in the linked data contract (ODCS), where {@code catalog} is a first-class
-   * Databricks server field. Returns {@code null} when the access is not applicable for this connector,
-   * i.e. the output port is not a Databricks port, no server could be resolved, or the server host does
-   * not match this connector's workspace.
+   * The server details live in the linked data contract, where {@code catalog} is a first-class
+   * Databricks server field, with the output port's own server config as fallback. Returns {@code null}
+   * when the access is not applicable for this connector, i.e. the output port is not a Databricks port,
+   * no server with catalog and schema could be resolved, or the server host does not match this
+   * connector's workspace.
    */
   private Map<String, String> resolveProviderServer(Access access) {
     var provider = access.getProvider();
@@ -122,9 +124,13 @@ public class DatabricksAccessManagementHandler implements EntropyDataEventHandle
       return null;
     }
 
+    // Resolve server config: first try data contract, then fall back to direct server field
     var server = resolveServerFromContract(outputPort);
     if (server == null) {
-      log.info("No data contract server could be resolved for dataProductId {}, outputPortId {}", dataProductId, outputPortId);
+      server = resolveServerFromOutputPort(outputPort);
+    }
+    if (server == null) {
+      log.info("No server could be resolved for dataProductId {}, outputPortId {}", dataProductId, outputPortId);
       return null;
     }
 
@@ -132,6 +138,11 @@ public class DatabricksAccessManagementHandler implements EntropyDataEventHandle
     if (!hostnamesMatch(serverHost)) {
       log.info("Hostnames do not match: entropydata.client.databricks.workspace.host={} and server.host={}",
           workspaceClient.config().getHost(), serverHost);
+      return null;
+    }
+
+    if (server.get("catalog") == null || server.get("schema") == null) {
+      log.info("Server for dataProductId {}, outputPortId {} has no catalog or schema", dataProductId, outputPortId);
       return null;
     }
 
@@ -155,16 +166,20 @@ public class DatabricksAccessManagementHandler implements EntropyDataEventHandle
   }
 
   /**
-   * Resolves the server from the data contract linked by the output port. The data contract's servers are
-   * returned by the API as a map keyed by server name; a Databricks server carries {@code host},
-   * {@code catalog} and {@code schema}.
+   * Resolves the server from the data contract linked by the output port. A Databricks server carries
+   * {@code host}, {@code catalog} and {@code schema}. The contract is fetched untyped, because the typed
+   * SDK model only supports DCS-shaped servers (a map keyed by server name) and fails to deserialize ODCS
+   * contracts, where servers is a list carrying the name in the {@code server} field.
    */
+  @SuppressWarnings("unchecked")
   private Map<String, String> resolveServerFromContract(Map<String, Object> outputPort) {
+    // Get the data contract ID - DPS uses "dataContractId", ODPS uses "contractId"
     var dataContractId = (String) outputPort.get("dataContractId");
     if (dataContractId == null) {
       dataContractId = (String) outputPort.get("contractId");
     }
     if (dataContractId == null) {
+      // ODPS may store contractId in customProperties
       dataContractId = getCustomPropertyValue(outputPort, "contractId");
     }
     if (dataContractId == null) {
@@ -173,27 +188,83 @@ public class DatabricksAccessManagementHandler implements EntropyDataEventHandle
 
     var contractServerName = getOutputPortCustomField(outputPort, "contractServer");
 
-    DataContract dataContract;
+    Map<String, Object> dataContract;
     try {
-      dataContract = client.getDataContractsApi().getDataContract(dataContractId);
+      dataContract = fetchDataContractAsMap(dataContractId);
     } catch (Exception e) {
-      log.debug("Failed to fetch data contract {}: {}", dataContractId, e.getMessage());
+      log.warn("Failed to fetch data contract {}: {}", dataContractId, e.getMessage());
       return null;
     }
 
-    var servers = dataContract.getServers();
-    if (servers == null || servers.isEmpty()) {
-      return null;
+    var servers = dataContract.get("servers");
+
+    // Data Contract Specification (DCS): servers is a Map<String, Server>
+    if (servers instanceof Map) {
+      var serversMap = (Map<String, Map<String, Object>>) servers;
+      Map<String, Object> server;
+      if (contractServerName != null && serversMap.containsKey(contractServerName)) {
+        server = serversMap.get(contractServerName);
+      } else {
+        server = serversMap.values().stream().findFirst().orElse(null);
+      }
+      if (server != null) {
+        return toStringMap(server);
+      }
     }
 
-    Map<String, Object> server;
-    if (contractServerName != null && servers.containsKey(contractServerName)) {
-      server = servers.get(contractServerName);
-    } else {
-      server = servers.values().stream().findFirst().orElse(null);
+    // Open Data Contract Standard (ODCS): servers is a List with "server" field as the name
+    if (servers instanceof List) {
+      var serversList = (List<Map<String, Object>>) servers;
+      Map<String, Object> server;
+      if (contractServerName != null) {
+        server = serversList.stream()
+            .filter(s -> contractServerName.equals(s.get("server")))
+            .findFirst().orElse(serversList.isEmpty() ? null : serversList.get(0));
+      } else {
+        server = serversList.isEmpty() ? null : serversList.get(0);
+      }
+      if (server != null) {
+        return toStringMap(server);
+      }
     }
 
-    return server == null ? null : toStringMap(server);
+    return null;
+  }
+
+  private Map<String, Object> fetchDataContractAsMap(String dataContractId) throws ApiException {
+    var apiClient = client.getApiClient();
+    var path = "/api/datacontracts/" + apiClient.escapeString(dataContractId);
+    return apiClient.invokeAPI(
+        path,
+        "GET",
+        new ArrayList<>(),
+        new ArrayList<>(),
+        "",
+        null,
+        new HashMap<>(),
+        new HashMap<>(),
+        new HashMap<>(),
+        "application/json",
+        null,
+        new String[] {"ApiKeyAuth", "BearerAuth"},
+        new TypeReference<Map<String, Object>>() {});
+  }
+
+  @SuppressWarnings("unchecked")
+  private Map<String, String> resolveServerFromOutputPort(Map<String, Object> outputPort) {
+    // DPS format: direct "server" field
+    if (outputPort.containsKey("server") && outputPort.get("server") instanceof Map) {
+      return toStringMap((Map<String, Object>) outputPort.get("server"));
+    }
+    // ODPS format: server in customProperties
+    if (outputPort.containsKey("customProperties") && outputPort.get("customProperties") instanceof List) {
+      for (var prop : (List<Map<String, Object>>) outputPort.get("customProperties")) {
+        if ("server".equals(prop.get("property")) && prop.get("value") instanceof Map) {
+          return toStringMap((Map<String, Object>) prop.get("value"));
+        }
+      }
+    }
+    return null;
   }
 
   @SuppressWarnings("unchecked")
