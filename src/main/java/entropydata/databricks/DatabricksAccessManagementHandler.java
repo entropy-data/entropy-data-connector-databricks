@@ -12,6 +12,7 @@ import com.databricks.sdk.service.catalog.UpdatePermissionsResponse;
 import com.databricks.sdk.service.iam.ComplexValue;
 import com.databricks.sdk.service.iam.Group;
 import com.databricks.sdk.service.iam.ListAccountGroupsRequest;
+import com.databricks.sdk.service.iam.ListAccountServicePrincipalsRequest;
 import com.databricks.sdk.service.iam.ServicePrincipal;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -456,32 +457,49 @@ public class DatabricksAccessManagementHandler implements EntropyDataEventHandle
     USER
   }
 
+  /**
+   * Resolves the account service principal representing a consumer data product, creating it if absent.
+   * It must be an <em>account</em> principal (not a workspace-local one) so it can be a member of the
+   * account group that carries the Unity Catalog grant. Returns the account SCIM id used as the group
+   * member value. Looks up by display name — the SCIM {@code get} endpoint only accepts the internal id.
+   */
   private String createDatabricksServiceProvider(String dataProductId) {
     DataProduct dataProduct = getDataProduct(dataProductId);
-    String servicePrincipalId = getServicePrincipalId(dataProduct);
+    String servicePrincipalName = getServicePrincipalName(dataProduct);
 
-    ServicePrincipal servicePrincipal = workspaceClient.servicePrincipals().get(servicePrincipalId);
-
-    if (servicePrincipal == null) {
-      log.info("Creating service principal for data product {}", dataProductId);
-      servicePrincipal = workspaceClient.servicePrincipals().create(
-          new ServicePrincipal()
-              .setId(servicePrincipalId)
-              .setDisplayName("Data Product " + dataProductTitle(dataProduct))
-              .setExternalId(dataProductId)
-              .setActive(true)
-      );
+    var existing = getServicePrincipalByName(servicePrincipalName);
+    if (existing.isPresent()) {
+      log.info("Service principal {} already exists", servicePrincipalName);
+      return existing.get().getId();
     }
 
-    return servicePrincipal.getId();
+    log.info("Creating service principal {} for data product {}", servicePrincipalName, dataProductId);
+    ServicePrincipal created = accountClient.servicePrincipals().create(
+        new ServicePrincipal()
+            .setDisplayName(servicePrincipalName)
+            .setExternalId(dataProductId)
+            .setActive(true));
+    log.info("Created service principal ID={}, Name={}", created.getId(), created.getDisplayName());
+    return created.getId();
   }
 
-  private static String dataProductTitle(DataProduct dataProduct) {
-    return dataProduct.getInfo() != null ? dataProduct.getInfo().getTitle() : dataProduct.getId();
+  private Optional<ServicePrincipal> getServicePrincipalByName(String displayName) {
+    Iterable<ServicePrincipal> servicePrincipals = accountClient.servicePrincipals()
+        .list(new ListAccountServicePrincipalsRequest().setFilter("displayName eq \"" + displayName + "\""));
+    var iterator = servicePrincipals.iterator();
+    return iterator.hasNext() ? Optional.of(iterator.next()) : Optional.empty();
   }
 
-  private static String getServicePrincipalId(DataProduct dataProduct) {
-    // TODO if a custom field mapping is configured, use it as the service principal id
+  /**
+   * The service principal name for a consumer data product: a {@code databricksServicePrincipal} custom
+   * property on the data product wins (to reuse the data product's real principal), otherwise a derived
+   * {@code dataproduct-<id>} name. The lookup and create must use the same name so an existing principal
+   * is reused instead of duplicated.
+   */
+  private static String getServicePrincipalName(DataProduct dataProduct) {
+    if (dataProduct.getCustom() != null && dataProduct.getCustom().containsKey("databricksServicePrincipal")) {
+      return dataProduct.getCustom().get("databricksServicePrincipal");
+    }
     return "dataproduct-" + dataProduct.getId();
   }
 

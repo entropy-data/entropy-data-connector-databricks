@@ -1,5 +1,6 @@
 package entropydata.databricks;
 
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.RETURNS_DEEP_STUBS;
@@ -11,22 +12,29 @@ import static org.mockito.Mockito.when;
 import com.databricks.sdk.AccountClient;
 import com.databricks.sdk.WorkspaceClient;
 import com.databricks.sdk.service.catalog.UpdatePermissions;
+import com.databricks.sdk.service.iam.Group;
+import com.databricks.sdk.service.iam.ListAccountServicePrincipalsRequest;
+import com.databricks.sdk.service.iam.ServicePrincipal;
 import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import entropydata.sdk.EntropyDataClient;
 import entropydata.sdk.client.ApiClient;
 import entropydata.sdk.client.api.AccessApi;
 import entropydata.sdk.client.api.DataProductsApi;
+import entropydata.sdk.client.api.TeamsApi;
 import entropydata.sdk.client.model.Access;
 import entropydata.sdk.client.model.AccessActivatedEvent;
 import entropydata.sdk.client.model.AccessProvider;
 import entropydata.sdk.client.model.DataUsageAgreementConsumer;
 import entropydata.sdk.client.model.DataUsageAgreementInfo;
+import entropydata.sdk.client.model.Team;
 import java.io.IOException;
 import java.io.InputStream;
+import java.util.List;
 import java.util.Map;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
 import org.yaml.snakeyaml.Yaml;
 
 class DatabricksAccessManagementHandlerTest {
@@ -34,6 +42,7 @@ class DatabricksAccessManagementHandlerTest {
   private EntropyDataClient client;
   private AccessApi accessApi;
   private DataProductsApi dataProductsApi;
+  private TeamsApi teamsApi;
   private ApiClient apiClient;
   private ObjectMapper objectMapper;
 
@@ -47,6 +56,7 @@ class DatabricksAccessManagementHandlerTest {
     client = mock(EntropyDataClient.class);
     accessApi = mock(AccessApi.class);
     dataProductsApi = mock(DataProductsApi.class);
+    teamsApi = mock(TeamsApi.class);
     workspaceClient = mock(WorkspaceClient.class, RETURNS_DEEP_STUBS);
     accountClient = mock(AccountClient.class, RETURNS_DEEP_STUBS);
 
@@ -57,6 +67,7 @@ class DatabricksAccessManagementHandlerTest {
     when(apiClient.getObjectMapper()).thenReturn(objectMapper);
     when(client.getAccessApi()).thenReturn(accessApi);
     when(client.getDataProductsApi()).thenReturn(dataProductsApi);
+    when(client.getTeamsApi()).thenReturn(teamsApi);
 
     handler = new DatabricksAccessManagementHandler(client, workspaceClient, accountClient);
   }
@@ -141,6 +152,54 @@ class DatabricksAccessManagementHandlerTest {
     verify(workspaceClient.grants(), never()).update(any(UpdatePermissions.class));
   }
 
+  @Test
+  void createsAccountServicePrincipalForDataProductConsumer() throws Exception {
+    when(accessApi.getAccess("a-1")).thenReturn(activeDataProductAccess());
+    when(dataProductsApi.getDataProduct("provider-dp")).thenReturn(loadYaml("provider-dp-databricks-odps.yaml"));
+    when(dataProductsApi.getDataProduct("consumer-dp")).thenReturn(loadYaml("consumer-dp.yaml"));
+    when(teamsApi.getTeam("t-1")).thenReturn(new Team().id("t-1"));
+    stubDataContract("datacontract-databricks.yaml");
+    when(workspaceClient.config().getHost()).thenReturn("https://dbc-abc.cloud.databricks.com");
+    // no service principal exists yet -> the connector must create one
+    when(accountClient.groups().create(any(Group.class))).thenReturn(new Group().setId("group-1"));
+    when(accountClient.servicePrincipals().list(any(ListAccountServicePrincipalsRequest.class))).thenReturn(List.of());
+    when(accountClient.servicePrincipals().create(any(ServicePrincipal.class)))
+        .thenReturn(new ServicePrincipal().setId("sp-777").setDisplayName("dataproduct-consumer-dp"));
+
+    var event = new AccessActivatedEvent();
+    event.setId("a-1");
+    handler.onAccessActivatedEvent(event);
+
+    // the consumer data product is represented by an account service principal named after its id,
+    // created via the account client (not looked up by name through the workspace SCIM get endpoint)
+    var captor = ArgumentCaptor.forClass(ServicePrincipal.class);
+    verify(accountClient.servicePrincipals()).create(captor.capture());
+    assertThat(captor.getValue().getDisplayName()).isEqualTo("dataproduct-consumer-dp");
+    verify(workspaceClient, never()).servicePrincipals();
+    verify(workspaceClient.grants()).update(any(UpdatePermissions.class));
+  }
+
+  @Test
+  void reusesServicePrincipalFromCustomProperty() throws Exception {
+    when(accessApi.getAccess("a-1")).thenReturn(activeDataProductAccess());
+    when(dataProductsApi.getDataProduct("provider-dp")).thenReturn(loadYaml("provider-dp-databricks-odps.yaml"));
+    when(dataProductsApi.getDataProduct("consumer-dp")).thenReturn(loadYaml("consumer-dp-custom-sp.yaml"));
+    when(teamsApi.getTeam("t-1")).thenReturn(new Team().id("t-1"));
+    stubDataContract("datacontract-databricks.yaml");
+    when(workspaceClient.config().getHost()).thenReturn("https://dbc-abc.cloud.databricks.com");
+    when(accountClient.groups().create(any(Group.class))).thenReturn(new Group().setId("group-1"));
+    when(accountClient.servicePrincipals().list(any(ListAccountServicePrincipalsRequest.class)))
+        .thenReturn(List.of(new ServicePrincipal().setId("sp-existing").setDisplayName("dp_custom_sp")));
+
+    var event = new AccessActivatedEvent();
+    event.setId("a-1");
+    handler.onAccessActivatedEvent(event);
+
+    // the databricksServicePrincipal custom property points at an existing principal, so none is created
+    verify(accountClient.servicePrincipals(), never()).create(any(ServicePrincipal.class));
+    verify(workspaceClient.grants()).update(any(UpdatePermissions.class));
+  }
+
   private void stubDataContract(String name) throws Exception {
     when(apiClient.<Map<String, Object>>invokeAPI(anyString(), anyString(), any(), any(), any(), any(),
         any(), any(), any(), any(), any(), any(), any()))
@@ -152,6 +211,15 @@ class DatabricksAccessManagementHandlerTest {
     access.setId("a-1");
     access.setProvider(new AccessProvider().dataProductId("provider-dp").outputPortId("op-databricks"));
     access.setConsumer(new DataUsageAgreementConsumer().userId("alice@example.com"));
+    access.setInfo(objectMapper.convertValue(Map.of("purpose", "test", "active", true), DataUsageAgreementInfo.class));
+    return access;
+  }
+
+  private Access activeDataProductAccess() {
+    var access = new Access();
+    access.setId("a-1");
+    access.setProvider(new AccessProvider().dataProductId("provider-dp").outputPortId("op-databricks"));
+    access.setConsumer(new DataUsageAgreementConsumer().dataProductId("consumer-dp").teamId("t-1"));
     access.setInfo(objectMapper.convertValue(Map.of("purpose", "test", "active", true), DataUsageAgreementInfo.class));
     return access;
   }
