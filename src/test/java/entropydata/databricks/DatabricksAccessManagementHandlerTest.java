@@ -5,16 +5,23 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.RETURNS_DEEP_STUBS;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.atLeastOnce;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import com.databricks.sdk.AccountClient;
 import com.databricks.sdk.WorkspaceClient;
+import com.databricks.sdk.service.catalog.Privilege;
 import com.databricks.sdk.service.catalog.UpdatePermissions;
 import com.databricks.sdk.service.iam.Group;
+import com.databricks.sdk.service.iam.ComplexValue;
 import com.databricks.sdk.service.iam.ListAccountServicePrincipalsRequest;
+import com.databricks.sdk.service.iam.ListAccountUsersRequest;
+import com.databricks.sdk.service.iam.PartialUpdate;
 import com.databricks.sdk.service.iam.ServicePrincipal;
+import com.databricks.sdk.service.iam.User;
 import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import entropydata.sdk.EntropyDataClient;
@@ -28,6 +35,7 @@ import entropydata.sdk.client.model.AccessProvider;
 import entropydata.sdk.client.model.DataUsageAgreementConsumer;
 import entropydata.sdk.client.model.DataUsageAgreementInfo;
 import entropydata.sdk.client.model.Team;
+import entropydata.sdk.client.model.TeamMembersInner;
 import java.io.IOException;
 import java.io.InputStream;
 import java.util.List;
@@ -85,7 +93,20 @@ class DatabricksAccessManagementHandlerTest {
 
     // catalog and schema come from the ODCS data contract server, not the output port
     verify(workspaceClient.schemas()).get("my_catalog.my_schema");
-    verify(workspaceClient.grants()).update(any(UpdatePermissions.class));
+    // the full read chain is granted: USE CATALOG on the catalog, USE SCHEMA + SELECT on the schema
+    var grants = ArgumentCaptor.forClass(UpdatePermissions.class);
+    verify(workspaceClient.grants(), times(2)).update(grants.capture());
+    assertThat(grants.getAllValues()).anySatisfy(g -> {
+      assertThat(g.getSecurableType()).isEqualTo("CATALOG");
+      assertThat(g.getFullName()).isEqualTo("my_catalog");
+      assertThat(g.getChanges().iterator().next().getAdd()).containsExactly(Privilege.USE_CATALOG);
+    });
+    assertThat(grants.getAllValues()).anySatisfy(g -> {
+      assertThat(g.getSecurableType()).isEqualTo("SCHEMA");
+      assertThat(g.getFullName()).isEqualTo("my_catalog.my_schema");
+      assertThat(g.getChanges().iterator().next().getAdd())
+          .containsExactlyInAnyOrder(Privilege.USE_SCHEMA, Privilege.SELECT);
+    });
   }
 
   @Test
@@ -101,7 +122,7 @@ class DatabricksAccessManagementHandlerTest {
 
     // a scheme-less server host (as in the ODCS schema example) still matches the workspace host
     verify(workspaceClient.schemas()).get("my_catalog.my_schema");
-    verify(workspaceClient.grants()).update(any(UpdatePermissions.class));
+    verify(workspaceClient.grants(), times(2)).update(any(UpdatePermissions.class));
   }
 
   @Test
@@ -134,7 +155,7 @@ class DatabricksAccessManagementHandlerTest {
     handler.onAccessActivatedEvent(event);
 
     verify(workspaceClient.schemas()).get("port_catalog.port_schema");
-    verify(workspaceClient.grants()).update(any(UpdatePermissions.class));
+    verify(workspaceClient.grants(), times(2)).update(any(UpdatePermissions.class));
   }
 
   @Test
@@ -176,7 +197,7 @@ class DatabricksAccessManagementHandlerTest {
     verify(accountClient.servicePrincipals()).create(captor.capture());
     assertThat(captor.getValue().getDisplayName()).isEqualTo("dataproduct-consumer-dp");
     verify(workspaceClient, never()).servicePrincipals();
-    verify(workspaceClient.grants()).update(any(UpdatePermissions.class));
+    verify(workspaceClient.grants(), times(2)).update(any(UpdatePermissions.class));
   }
 
   @Test
@@ -197,7 +218,35 @@ class DatabricksAccessManagementHandlerTest {
 
     // the databricksServicePrincipal custom property points at an existing principal, so none is created
     verify(accountClient.servicePrincipals(), never()).create(any(ServicePrincipal.class));
-    verify(workspaceClient.grants()).update(any(UpdatePermissions.class));
+    verify(workspaceClient.grants(), times(2)).update(any(UpdatePermissions.class));
+  }
+
+  @Test
+  @SuppressWarnings("unchecked")
+  void resolvesTeamMembersToAccountUserIds() throws Exception {
+    when(accessApi.getAccess("a-1")).thenReturn(activeTeamAccess());
+    when(dataProductsApi.getDataProduct("provider-dp")).thenReturn(loadYaml("provider-dp-databricks-odps.yaml"));
+    stubDataContract("datacontract-databricks.yaml");
+    when(workspaceClient.config().getHost()).thenReturn("https://dbc-abc.cloud.databricks.com");
+    when(accountClient.groups().create(any(Group.class))).thenReturn(new Group().setId("group-1"));
+    when(teamsApi.getTeam("t-team")).thenReturn(new Team().id("t-team")
+        .members(List.of(new TeamMembersInner().emailAddress("alice@example.com"))));
+    when(accountClient.users().list(any(ListAccountUsersRequest.class)))
+        .thenReturn(List.of(new User().setId("user-alice").setUserName("alice@example.com")));
+
+    var event = new AccessActivatedEvent();
+    event.setId("a-1");
+    handler.onAccessActivatedEvent(event);
+
+    // team members are added to the group by their Databricks account user id, not their email address
+    var patch = ArgumentCaptor.forClass(PartialUpdate.class);
+    verify(accountClient.groups(), atLeastOnce()).patch(patch.capture());
+    var addedMemberValues = patch.getAllValues().stream()
+        .flatMap(p -> p.getOperations().stream())
+        .flatMap(op -> ((List<ComplexValue>) op.getValue()).stream())
+        .map(ComplexValue::getValue)
+        .toList();
+    assertThat(addedMemberValues).contains("user-alice").doesNotContain("alice@example.com");
   }
 
   private void stubDataContract(String name) throws Exception {
@@ -220,6 +269,15 @@ class DatabricksAccessManagementHandlerTest {
     access.setId("a-1");
     access.setProvider(new AccessProvider().dataProductId("provider-dp").outputPortId("op-databricks"));
     access.setConsumer(new DataUsageAgreementConsumer().dataProductId("consumer-dp").teamId("t-1"));
+    access.setInfo(objectMapper.convertValue(Map.of("purpose", "test", "active", true), DataUsageAgreementInfo.class));
+    return access;
+  }
+
+  private Access activeTeamAccess() {
+    var access = new Access();
+    access.setId("a-1");
+    access.setProvider(new AccessProvider().dataProductId("provider-dp").outputPortId("op-databricks"));
+    access.setConsumer(new DataUsageAgreementConsumer().teamId("t-team"));
     access.setInfo(objectMapper.convertValue(Map.of("purpose", "test", "active", true), DataUsageAgreementInfo.class));
     return access;
   }

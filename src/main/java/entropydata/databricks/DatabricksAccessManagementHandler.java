@@ -13,7 +13,13 @@ import com.databricks.sdk.service.iam.ComplexValue;
 import com.databricks.sdk.service.iam.Group;
 import com.databricks.sdk.service.iam.ListAccountGroupsRequest;
 import com.databricks.sdk.service.iam.ListAccountServicePrincipalsRequest;
+import com.databricks.sdk.service.iam.ListAccountUsersRequest;
+import com.databricks.sdk.service.iam.PartialUpdate;
+import com.databricks.sdk.service.iam.Patch;
+import com.databricks.sdk.service.iam.PatchOp;
+import com.databricks.sdk.service.iam.PatchSchema;
 import com.databricks.sdk.service.iam.ServicePrincipal;
+import com.databricks.sdk.service.iam.User;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import entropydata.sdk.EntropyDataClient;
@@ -331,17 +337,15 @@ public class DatabricksAccessManagementHandler implements EntropyDataEventHandle
         // also add the consumer team to the access group
         log.info("Adding consumer team to access group {}", accessGroupName);
         var consumerTeam = getConsumerTeam(access.getConsumer().getTeamId());
-        var consumerTeamGroupName = "team-" + consumerTeam.getId();
-        var teamGroup = createDatabricksGroup(consumerTeamGroupName);
-        addMembersToGroup(teamGroup, getMemberEmailAddresses(consumerTeam));
+        var teamGroup = createDatabricksGroup("team-" + consumerTeam.getId());
+        addMembersToGroup(teamGroup, getConsumerTeamMemberIds(consumerTeam));
         addMemberToGroup(accessGroup, teamGroup.getId());
       }
       case TEAM -> {
         var consumerTeam = getConsumerTeam(access.getConsumer().getTeamId());
-        var consumerTeamGroupId = "team-" + consumerTeam.getId();
-        var teamGroup = createDatabricksGroup(consumerTeamGroupId);
-        addMembersToGroup(teamGroup, getMemberEmailAddresses(consumerTeam));
-        addMemberToGroup(accessGroup, consumerTeamGroupId);
+        var teamGroup = createDatabricksGroup("team-" + consumerTeam.getId());
+        addMembersToGroup(teamGroup, getConsumerTeamMemberIds(consumerTeam));
+        addMemberToGroup(accessGroup, teamGroup.getId());
       }
       case USER -> {
         var userId = access.getConsumer().getUserId();
@@ -349,7 +353,7 @@ public class DatabricksAccessManagementHandler implements EntropyDataEventHandle
       }
     }
 
-    grantSchemaPermissions(schemaFullName, accessGroup.getDisplayName());
+    grantSchemaPermissions(server.get("catalog"), schemaFullName, accessGroup.getDisplayName());
 
     // TODO: update access resource in Entropy Data with logs
   }
@@ -391,7 +395,8 @@ public class DatabricksAccessManagementHandler implements EntropyDataEventHandle
   private Optional<Group> getGroupByName(String groupName) {
     Iterable<Group> groups = accountClient.groups()
         .list(new ListAccountGroupsRequest().setFilter("displayName eq \"" + groupName + "\""));
-    return groups.iterator().hasNext() ? Optional.of(groups.iterator().next()) : Optional.empty();
+    var iterator = groups.iterator();
+    return iterator.hasNext() ? Optional.of(iterator.next()) : Optional.empty();
   }
 
   private Optional<Group> getGroupById(String groupId) {
@@ -406,25 +411,41 @@ public class DatabricksAccessManagementHandler implements EntropyDataEventHandle
     addMembersToGroup(group, List.of(principalId));
   }
 
+  /**
+   * Adds principals to an account group via a SCIM {@code add} patch. A patch (not a full-resource
+   * update) is used so the request only carries the new members and cannot accidentally drop existing
+   * ones. Members already present are skipped to keep re-processing of the same event idempotent; the
+   * fetched group's member list may be {@code null} (no members), which is treated as empty.
+   */
   private void addMembersToGroup(Group group, List<String> principalIds) {
-    var group1 = getGroupById(group.getId()).orElseThrow(() -> {
+    var existing = getGroupById(group.getId()).orElseThrow(() -> {
       log.error("Group {} does not exist", group.getId());
       return new IllegalStateException("Group " + group.getId() + " does not exist");
     });
-    var changed = false;
-    for (String principalId : principalIds) {
-      if (group1.getMembers() != null && group1.getMembers().stream().noneMatch(m -> m.getValue().equals(principalId))) {
-        log.info("Adding member {} to group {}", principalId, group.getId());
-        group1.getMembers().add(new ComplexValue().setValue(principalId));
-        changed = true;
-      } else {
-        log.info("Member {} already in group {}", principalId, group.getId());
-      }
+    var existingMemberIds = existing.getMembers() == null ? List.<String>of()
+        : existing.getMembers().stream().map(ComplexValue::getValue).toList();
+
+    var newMembers = principalIds.stream()
+        .filter(Objects::nonNull)
+        .distinct()
+        .filter(id -> !existingMemberIds.contains(id))
+        .map(id -> new ComplexValue().setValue(id))
+        .toList();
+
+    if (newMembers.isEmpty()) {
+      log.info("All members already in group {}", group.getId());
+      return;
     }
-    if (changed) {
-      log.info("Updating group {}", group.getId());
-      accountClient.groups().update(group1);
-    }
+
+    log.info("Adding members {} to group {}",
+        newMembers.stream().map(ComplexValue::getValue).toList(), group.getId());
+    accountClient.groups().patch(new PartialUpdate()
+        .setId(group.getId())
+        .setSchemas(List.of(PatchSchema.URN_IETF_PARAMS_SCIM_API_MESSAGES_2_0_PATCH_OP))
+        .setOperations(List.of(new Patch()
+            .setOp(PatchOp.ADD)
+            .setPath("members")
+            .setValue(newMembers))));
   }
 
   private Team getConsumerTeam(String teamId) {
@@ -436,6 +457,31 @@ public class DatabricksAccessManagementHandler implements EntropyDataEventHandle
       return Collections.emptyList();
     }
     return consumerTeam.getMembers().stream().map(TeamMembersInner::getEmailAddress).toList();
+  }
+
+  /**
+   * Resolves the team's members to Databricks account user ids. Account group membership is keyed by the
+   * principal's SCIM id, not the email address, so each member's email is looked up as a {@code userName}.
+   * Members without a matching Databricks account user are skipped with a warning.
+   */
+  private List<String> getConsumerTeamMemberIds(Team consumerTeam) {
+    var memberIds = new ArrayList<String>();
+    for (String emailAddress : getMemberEmailAddresses(consumerTeam)) {
+      var user = getAccountUserByUserName(emailAddress);
+      if (user.isPresent()) {
+        memberIds.add(user.get().getId());
+      } else {
+        log.warn("No Databricks account user found for {}, skipping", emailAddress);
+      }
+    }
+    return memberIds;
+  }
+
+  private Optional<User> getAccountUserByUserName(String userName) {
+    Iterable<User> users = accountClient.users()
+        .list(new ListAccountUsersRequest().setFilter("userName eq \"" + userName + "\""));
+    var iterator = users.iterator();
+    return iterator.hasNext() ? Optional.of(iterator.next()) : Optional.empty();
   }
 
 
@@ -503,7 +549,11 @@ public class DatabricksAccessManagementHandler implements EntropyDataEventHandle
     return "dataproduct-" + dataProduct.getId();
   }
 
-  public void grantSchemaPermissions(String schemaFullName, String principal) {
+  /**
+   * Grants read access on a schema to a principal. Unity Catalog requires the full chain to actually
+   * read: {@code USE CATALOG} on the catalog, plus {@code USE SCHEMA} and {@code SELECT} on the schema.
+   */
+  public void grantSchemaPermissions(String catalogName, String schemaFullName, String principal) {
 
     // verify that the schema exists in databricks
     SchemaInfo schemaInfo = workspaceClient.schemas().get(schemaFullName);
@@ -512,16 +562,25 @@ public class DatabricksAccessManagementHandler implements EntropyDataEventHandle
       return;
     }
 
-    log.info("Granting SELECT permission to principal {} on schema {}", principal, schemaFullName);
+    log.info("Granting USE CATALOG to principal {} on catalog {}", principal, catalogName);
+    workspaceClient.grants().update(
+        new UpdatePermissions()
+            .setSecurableType(SecurableType.CATALOG.name())
+            .setFullName(catalogName)
+            .setChanges(Collections.singleton(
+                new PermissionsChange()
+                    .setPrincipal(principal)
+                    .setAdd(Collections.singleton(Privilege.USE_CATALOG)))));
+
+    log.info("Granting USE SCHEMA, SELECT to principal {} on schema {}", principal, schemaFullName);
     UpdatePermissionsResponse grantedPermissions = workspaceClient.grants().update(
         new UpdatePermissions()
-        .setSecurableType(SecurableType.SCHEMA.name())
-        .setFullName(schemaFullName)
-        .setChanges(Collections.singleton(
-            new PermissionsChange()
-                .setPrincipal(principal)
-                .setAdd(Collections.singleton(Privilege.SELECT))
-        )));
+            .setSecurableType(SecurableType.SCHEMA.name())
+            .setFullName(schemaFullName)
+            .setChanges(Collections.singleton(
+                new PermissionsChange()
+                    .setPrincipal(principal)
+                    .setAdd(List.of(Privilege.USE_SCHEMA, Privilege.SELECT)))));
     log.info("Granted permissions: {}", grantedPermissions);
 
     // TODO return log information
