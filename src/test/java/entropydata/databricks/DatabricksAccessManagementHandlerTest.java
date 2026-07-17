@@ -277,7 +277,8 @@ class DatabricksAccessManagementHandlerTest {
     var access = new Access();
     access.setId("a-1");
     access.setProvider(new AccessProvider().dataProductId("provider-dp").outputPortId("op-databricks"));
-    access.setConsumer(new DataUsageAgreementConsumer().teamId("t-team"));
+    // the API fills the unused consumer field with the "unknown" sentinel rather than null
+    access.setConsumer(new DataUsageAgreementConsumer().teamId("t-team").dataProductId("unknown"));
     access.setInfo(objectMapper.convertValue(Map.of("purpose", "test", "active", true), DataUsageAgreementInfo.class));
     return access;
   }

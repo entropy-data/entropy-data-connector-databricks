@@ -486,15 +486,23 @@ public class DatabricksAccessManagementHandler implements EntropyDataEventHandle
 
 
   private ConsumerType consumerType(Access access) {
-    //noinspection ConstantValue
-    if (access.getConsumer().getDataProductId() != null) {
+    var consumer = access.getConsumer();
+    if (isPresent(consumer.getDataProductId())) {
       return ConsumerType.DATA_PRODUCT;
-    } else if (access.getConsumer().getTeamId() != null) {
+    } else if (isPresent(consumer.getTeamId())) {
       return ConsumerType.TEAM;
-    } else if (access.getConsumer().getUserId() != null) {
+    } else if (isPresent(consumer.getUserId())) {
       return ConsumerType.USER;
     }
     throw new IllegalArgumentException("Unknown consumer type");
+  }
+
+  /**
+   * The API fills the unused consumer discriminator fields with the sentinel {@code "unknown"} rather
+   * than leaving them null, so a plain null check misclassifies the consumer type.
+   */
+  private static boolean isPresent(String value) {
+    return value != null && !value.isBlank() && !"unknown".equals(value);
   }
 
   enum ConsumerType {
