@@ -9,7 +9,7 @@ import com.databricks.sdk.service.catalog.TableInfo;
 import entropydata.sdk.EntropyDataAssetsProvider;
 import entropydata.sdk.EntropyDataStateRepository;
 import entropydata.sdk.client.model.Asset;
-import entropydata.sdk.client.model.AssetColumnsInner;
+import entropydata.sdk.client.model.AssetColumn;
 import entropydata.sdk.client.model.AssetInfo;
 import entropydata.sdk.client.model.AssetRelationshipsInner;
 import java.util.List;
@@ -205,7 +205,7 @@ public class DatabricksAssetsSupplier implements EntropyDataAssetsProvider {
 
     if (table.getColumns() != null) {
       for (var column : table.getColumns()) {
-        asset.addColumnsItem(new AssetColumnsInner()
+        asset.addColumnsItem(new AssetColumn()
             .name(column.getName())
             .type(column.getTypeText())
             .description(column.getComment()));
