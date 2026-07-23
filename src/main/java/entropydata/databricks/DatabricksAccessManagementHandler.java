@@ -28,6 +28,10 @@ import entropydata.sdk.client.ApiException;
 import entropydata.sdk.client.model.Access;
 import entropydata.sdk.client.model.AccessActivatedEvent;
 import entropydata.sdk.client.model.AccessDeactivatedEvent;
+import entropydata.sdk.client.model.AccessDeprovisioningSucceededReport;
+import entropydata.sdk.client.model.AccessProvisioningFailedReport;
+import entropydata.sdk.client.model.AccessProvisioningStartedReport;
+import entropydata.sdk.client.model.AccessProvisioningSucceededReport;
 import entropydata.sdk.client.model.DataProduct;
 import entropydata.sdk.client.model.Team;
 import entropydata.sdk.client.model.TeamMembersInner;
@@ -45,6 +49,11 @@ import org.slf4j.LoggerFactory;
 public class DatabricksAccessManagementHandler implements EntropyDataEventHandler {
 
   private static final Logger log = LoggerFactory.getLogger(DatabricksAccessManagementHandler.class);
+
+  // Reported back to Entropy Data on every provisioning transition, so the access page shows which
+  // platform holds the grant and which component created it.
+  private static final String PLATFORM = "databricks";
+  private static final String EXECUTOR = "Entropy Data Databricks Connector";
 
   private final EntropyDataClient client;
   private final WorkspaceClient workspaceClient;
@@ -78,7 +87,19 @@ public class DatabricksAccessManagementHandler implements EntropyDataEventHandle
       log.info("Access {} is not active, skip granting permissions", access.getId());
       return;
     }
-    grantPermissions(access, server);
+
+    var schemaFullName = server.get("catalog") + "." + server.get("schema");
+    reportProvisioningStarted(access);
+    try {
+      grantPermissions(access, server);
+    } catch (RuntimeException e) {
+      log.error("Failed to grant permissions for access {}", access.getId(), e);
+      reportProvisioningFailed(access, e);
+      // Swallow after reporting: the failure is now recorded and mailed to the provider, whereas
+      // rethrowing would stall the whole event feed on this one access until it is retried.
+      return;
+    }
+    reportProvisioningSucceeded(access, schemaFullName);
   }
 
   @Override
@@ -93,11 +114,81 @@ public class DatabricksAccessManagementHandler implements EntropyDataEventHandle
       log.info("Access {} is not applicable for Databricks access management", access.getId());
       return;
     }
-    revokePermissions(access);
+
+    var accessGroupName = "access-" + access.getId();
+    reportDeprovisioningStarted(access);
+    try {
+      revokePermissions(access);
+    } catch (RuntimeException e) {
+      log.error("Failed to revoke permissions for access {}", access.getId(), e);
+      reportDeprovisioningFailed(access, e);
+      return;
+    }
+    reportDeprovisioningSucceeded(access, accessGroupName);
   }
 
   private boolean isActive(Access access) {
     return Objects.equals(access.getInfo().getActive(), Boolean.TRUE);
+  }
+
+  private void reportProvisioningStarted(Access access) {
+    safeReport(access.getId(), "provisioning-started", () ->
+        client.getAccessApi().reportProvisioningStarted(access.getId(),
+            new AccessProvisioningStartedReport().platform(PLATFORM).executor(EXECUTOR)));
+  }
+
+  private void reportProvisioningSucceeded(Access access, String reference) {
+    safeReport(access.getId(), "provisioning-succeeded", () ->
+        client.getAccessApi().reportProvisioningSucceeded(access.getId(),
+            new AccessProvisioningSucceededReport().platform(PLATFORM).executor(EXECUTOR).reference(reference)));
+  }
+
+  private void reportProvisioningFailed(Access access, Exception cause) {
+    safeReport(access.getId(), "provisioning-failed", () ->
+        client.getAccessApi().reportProvisioningFailed(access.getId(),
+            new AccessProvisioningFailedReport().platform(PLATFORM).executor(EXECUTOR).diagnostics(diagnostics(cause))));
+  }
+
+  private void reportDeprovisioningStarted(Access access) {
+    safeReport(access.getId(), "deprovisioning-started", () ->
+        client.getAccessApi().reportDeprovisioningStarted(access.getId(),
+            new AccessProvisioningStartedReport().platform(PLATFORM).executor(EXECUTOR)));
+  }
+
+  private void reportDeprovisioningSucceeded(Access access, String reference) {
+    safeReport(access.getId(), "deprovisioning-succeeded", () ->
+        client.getAccessApi().reportDeprovisioningSucceeded(access.getId(),
+            new AccessDeprovisioningSucceededReport().platform(PLATFORM).executor(EXECUTOR).reference(reference)));
+  }
+
+  private void reportDeprovisioningFailed(Access access, Exception cause) {
+    safeReport(access.getId(), "deprovisioning-failed", () ->
+        client.getAccessApi().reportDeprovisioningFailed(access.getId(),
+            new AccessProvisioningFailedReport().platform(PLATFORM).executor(EXECUTOR).diagnostics(diagnostics(cause))));
+  }
+
+  /**
+   * Reports one transition, swallowing any failure. The grant itself is the source of truth; a
+   * report that cannot be delivered (e.g. the backend predates provisioning, or the API key lacks
+   * the provider's ACCESS_EDIT permission) must not undo or block the grant.
+   */
+  private void safeReport(String accessId, String transition, ReportCall call) {
+    try {
+      call.run();
+      log.info("Reported {} for access {}", transition, accessId);
+    } catch (Exception e) {
+      log.warn("Failed to report {} for access {}: {}", transition, accessId, e.getMessage());
+    }
+  }
+
+  private static String diagnostics(Exception cause) {
+    var message = cause.getMessage();
+    return message != null ? message : cause.getClass().getSimpleName();
+  }
+
+  @FunctionalInterface
+  private interface ReportCall {
+    void run() throws ApiException;
   }
 
   /**
@@ -354,8 +445,6 @@ public class DatabricksAccessManagementHandler implements EntropyDataEventHandle
     }
 
     grantSchemaPermissions(server.get("catalog"), schemaFullName, accessGroup.getDisplayName());
-
-    // TODO: update access resource in Entropy Data with logs
   }
 
   /**
@@ -590,8 +679,6 @@ public class DatabricksAccessManagementHandler implements EntropyDataEventHandle
                     .setPrincipal(principal)
                     .setAdd(List.of(Privilege.USE_SCHEMA, Privilege.SELECT)))));
     log.info("Granted permissions: {}", grantedPermissions);
-
-    // TODO return log information
   }
 
   private Access getAccess(String accessId) {

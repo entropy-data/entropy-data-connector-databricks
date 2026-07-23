@@ -3,7 +3,9 @@ package entropydata.databricks;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.RETURNS_DEEP_STUBS;
+import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.atLeastOnce;
 import static org.mockito.Mockito.never;
@@ -31,7 +33,12 @@ import entropydata.sdk.client.api.DataProductsApi;
 import entropydata.sdk.client.api.TeamsApi;
 import entropydata.sdk.client.model.Access;
 import entropydata.sdk.client.model.AccessActivatedEvent;
+import entropydata.sdk.client.model.AccessDeactivatedEvent;
+import entropydata.sdk.client.model.AccessDeprovisioningSucceededReport;
 import entropydata.sdk.client.model.AccessProvider;
+import entropydata.sdk.client.model.AccessProvisioningFailedReport;
+import entropydata.sdk.client.model.AccessProvisioningStartedReport;
+import entropydata.sdk.client.model.AccessProvisioningSucceededReport;
 import entropydata.sdk.client.model.DataUsageAgreementConsumer;
 import entropydata.sdk.client.model.DataUsageAgreementInfo;
 import entropydata.sdk.client.model.Team;
@@ -247,6 +254,83 @@ class DatabricksAccessManagementHandlerTest {
         .map(ComplexValue::getValue)
         .toList();
     assertThat(addedMemberValues).contains("user-alice").doesNotContain("alice@example.com");
+  }
+
+  @Test
+  void reportsProvisioningStartedThenSucceededOnGrant() throws Exception {
+    when(accessApi.getAccess("a-1")).thenReturn(activeUserAccess());
+    when(dataProductsApi.getDataProduct("provider-dp")).thenReturn(loadYaml("provider-dp-databricks-odps.yaml"));
+    stubDataContract("datacontract-databricks.yaml");
+    when(workspaceClient.config().getHost()).thenReturn("https://dbc-abc.cloud.databricks.com");
+
+    var event = new AccessActivatedEvent();
+    event.setId("a-1");
+    handler.onAccessActivatedEvent(event);
+
+    // started is reported before the grant, succeeded after it, with the granted schema as reference
+    var order = inOrder(accessApi);
+    order.verify(accessApi).reportProvisioningStarted(eq("a-1"), any(AccessProvisioningStartedReport.class));
+    var succeeded = ArgumentCaptor.forClass(AccessProvisioningSucceededReport.class);
+    order.verify(accessApi).reportProvisioningSucceeded(eq("a-1"), succeeded.capture());
+    assertThat(succeeded.getValue().getPlatform()).isEqualTo("databricks");
+    assertThat(succeeded.getValue().getReference()).isEqualTo("my_catalog.my_schema");
+    verify(accessApi, never()).reportProvisioningFailed(anyString(), any());
+  }
+
+  @Test
+  void reportsProvisioningFailedWhenGrantThrows() throws Exception {
+    when(accessApi.getAccess("a-1")).thenReturn(activeUserAccess());
+    when(dataProductsApi.getDataProduct("provider-dp")).thenReturn(loadYaml("provider-dp-databricks-odps.yaml"));
+    stubDataContract("datacontract-databricks.yaml");
+    when(workspaceClient.config().getHost()).thenReturn("https://dbc-abc.cloud.databricks.com");
+    when(workspaceClient.schemas().get(anyString())).thenThrow(new RuntimeException("schema exploded"));
+
+    var event = new AccessActivatedEvent();
+    event.setId("a-1");
+    // the grant throws, but the handler must swallow it after reporting so the event feed is not stalled
+    handler.onAccessActivatedEvent(event);
+
+    var order = inOrder(accessApi);
+    order.verify(accessApi).reportProvisioningStarted(eq("a-1"), any(AccessProvisioningStartedReport.class));
+    var failed = ArgumentCaptor.forClass(AccessProvisioningFailedReport.class);
+    order.verify(accessApi).reportProvisioningFailed(eq("a-1"), failed.capture());
+    assertThat(failed.getValue().getDiagnostics()).isEqualTo("schema exploded");
+    verify(accessApi, never()).reportProvisioningSucceeded(anyString(), any());
+  }
+
+  @Test
+  void reportsDeprovisioningStartedThenSucceededOnRevoke() throws Exception {
+    when(accessApi.getAccess("a-1")).thenReturn(activeUserAccess());
+    when(dataProductsApi.getDataProduct("provider-dp")).thenReturn(loadYaml("provider-dp-databricks-odps.yaml"));
+    stubDataContract("datacontract-databricks.yaml");
+    when(workspaceClient.config().getHost()).thenReturn("https://dbc-abc.cloud.databricks.com");
+
+    var event = new AccessDeactivatedEvent();
+    event.setId("a-1");
+    handler.onAccessDeactivatedEvent(event);
+
+    var order = inOrder(accessApi);
+    order.verify(accessApi).reportDeprovisioningStarted(eq("a-1"), any(AccessProvisioningStartedReport.class));
+    var succeeded = ArgumentCaptor.forClass(AccessDeprovisioningSucceededReport.class);
+    order.verify(accessApi).reportDeprovisioningSucceeded(eq("a-1"), succeeded.capture());
+    assertThat(succeeded.getValue().getReference()).isEqualTo("access-a-1");
+  }
+
+  @Test
+  void doesNotReportProvisioningWhenNotApplicable() throws Exception {
+    when(accessApi.getAccess("a-1")).thenReturn(activeUserAccess());
+    when(dataProductsApi.getDataProduct("provider-dp")).thenReturn(loadYaml("provider-dp-databricks-odps.yaml"));
+    stubDataContract("datacontract-databricks.yaml");
+    // a different workspace host: another connector owns this access, so this one must stay silent
+    when(workspaceClient.config().getHost()).thenReturn("https://dbc-other.cloud.databricks.com");
+
+    var event = new AccessActivatedEvent();
+    event.setId("a-1");
+    handler.onAccessActivatedEvent(event);
+
+    verify(accessApi, never()).reportProvisioningStarted(anyString(), any());
+    verify(accessApi, never()).reportProvisioningSucceeded(anyString(), any());
+    verify(accessApi, never()).reportProvisioningFailed(anyString(), any());
   }
 
   private void stubDataContract(String name) throws Exception {
