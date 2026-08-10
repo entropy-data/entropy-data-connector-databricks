@@ -8,8 +8,10 @@ import entropydata.sdk.EntropyDataClient;
 import entropydata.sdk.EntropyDataEventListener;
 import entropydata.sdk.EntropyDataStateRepositoryRemote;
 import java.util.Objects;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.SpringApplication;
+import org.springframework.boot.info.BuildProperties;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.boot.context.properties.ConfigurationPropertiesScan;
@@ -59,11 +61,13 @@ public class Application {
       EntropyDataClient client, DatabricksProperties databricksProperties,
       WorkspaceClient workspaceClient,
       AccountClient accountClient,
-      TaskExecutor taskExecutor) {
+      TaskExecutor taskExecutor,
+      ObjectProvider<BuildProperties> buildProperties) {
     var connectorid = databricksProperties.accessmanagement().connectorid();
     var eventHandler = new DatabricksAccessManagementHandler(client, workspaceClient, accountClient);
     var stateRepository = new EntropyDataStateRepositoryRemote(connectorid, client);
-    var entropyDataEventListener = new EntropyDataEventListener(connectorid, "accessmanagement", client, eventHandler, stateRepository);
+    var entropyDataEventListener = new EntropyDataEventListener(connectorid, "accessmanagement", client, eventHandler, stateRepository,
+        connectorVersion(buildProperties));
     taskExecutor.execute(entropyDataEventListener::start);
     return entropyDataEventListener;
   }
@@ -81,12 +85,13 @@ public class Application {
       EntropyDataClient client,
       WorkspaceClient workspaceClient,
       AssetsSynchronizationHealth assetsSynchronizationHealth,
-      TaskExecutor taskExecutor) {
+      TaskExecutor taskExecutor,
+      ObjectProvider<BuildProperties> buildProperties) {
     var connectorid = databricksProperties.assets().connectorid();
     var stateRepository = new EntropyDataStateRepositoryRemote(connectorid, client);
     var assetsSupplier = new DatabricksAssetsSupplier(workspaceClient, stateRepository, databricksProperties);
     var entropyDataAssetsSynchronizer = new EntropyDataAssetsSynchronizer(connectorid, client,
-        assetsSynchronizationHealth.wrap(assetsSupplier));
+        assetsSynchronizationHealth.wrap(assetsSupplier), connectorVersion(buildProperties));
     if (databricksProperties.assets().pollinterval() != null) {
       entropyDataAssetsSynchronizer.setDelay(databricksProperties.assets().pollinterval());
     }
@@ -100,4 +105,12 @@ public class Application {
     return new SimpleAsyncTaskExecutor();
   }
 
+  /**
+   * The version this connector runs with, so that it is visible in Entropy Data. Absent when the build information is not on the
+   * classpath, such as when the application is started from an IDE.
+   */
+  private static String connectorVersion(ObjectProvider<BuildProperties> buildProperties) {
+    var properties = buildProperties.getIfAvailable();
+    return properties != null ? properties.getVersion() : null;
+  }
 }
