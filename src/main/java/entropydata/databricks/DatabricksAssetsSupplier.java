@@ -4,6 +4,8 @@ import com.databricks.sdk.WorkspaceClient;
 import com.databricks.sdk.service.catalog.CatalogInfo;
 import com.databricks.sdk.service.catalog.CatalogType;
 import com.databricks.sdk.service.catalog.ListCatalogsRequest;
+import com.databricks.sdk.service.catalog.ListSchemasRequest;
+import com.databricks.sdk.service.catalog.ListTablesRequest;
 import com.databricks.sdk.service.catalog.SchemaInfo;
 import com.databricks.sdk.service.catalog.TableInfo;
 import entropydata.sdk.EntropyDataAssetsProvider;
@@ -23,15 +25,27 @@ public class DatabricksAssetsSupplier implements EntropyDataAssetsProvider {
 
   private static final Logger log = LoggerFactory.getLogger(DatabricksAssetsSupplier.class);
 
+  /**
+   * Without a page size, the Unity Catalog list APIs return every entry in a single response, which has to be held in memory at once. Zero
+   * requests the server configured page size, so the SDK paginates instead.
+   */
+  private static final long SERVER_CONFIGURED_PAGE_SIZE = 0L;
+
   private final WorkspaceClient workspaceClient;
   private final EntropyDataStateRepository entropyDataStateRepository;
   private final DatabricksProperties databricksProperties;
+  private final NameFilter catalogFilter;
+  private final NameFilter schemaFilter;
+  private final NameFilter tableFilter;
 
   public DatabricksAssetsSupplier(WorkspaceClient workspaceClient, EntropyDataStateRepository entropyDataStateRepository,
       DatabricksProperties databricksProperties) {
     this.workspaceClient = workspaceClient;
     this.entropyDataStateRepository = entropyDataStateRepository;
     this.databricksProperties = databricksProperties;
+    this.catalogFilter = NameFilter.of(databricksProperties.assets().catalogs());
+    this.schemaFilter = NameFilter.of(databricksProperties.assets().schemas());
+    this.tableFilter = NameFilter.of(databricksProperties.assets().tables());
   }
 
   @Override
@@ -39,28 +53,43 @@ public class DatabricksAssetsSupplier implements EntropyDataAssetsProvider {
     final var databricksLastUpdatedAt = getLastUpdatedAt();
     var databricksLastUpdatedAtThisRunMax = databricksLastUpdatedAt;
 
-    var catalogs = workspaceClient.catalogs().list(new ListCatalogsRequest());
+    var catalogs = workspaceClient.catalogs().list(new ListCatalogsRequest()
+        .setMaxResults(SERVER_CONFIGURED_PAGE_SIZE));
     for (var catalog : catalogs) {
       if (!includeCatalog(catalog)) {
+        log.debug("Skipping catalog {} of type {}", catalog.getFullName(), catalog.getCatalogType());
         continue;
       }
 
       log.info("Synchronizing catalog {}", catalog.getFullName());
       catalogToAsset(catalog, databricksLastUpdatedAt).ifPresent(assetCallback::onAssetUpdated);
 
-      var schemas = workspaceClient.schemas().list(catalog.getFullName());
+      var schemas = workspaceClient.schemas().list(new ListSchemasRequest()
+          .setCatalogName(catalog.getFullName())
+          .setMaxResults(SERVER_CONFIGURED_PAGE_SIZE));
       long schemasCount = 0;
       for (var schema : schemas) {
         if (!includeSchema(schema)) {
+          log.debug("Skipping schema {}", schema.getFullName());
           continue;
         }
 
         log.info("Synchronizing schema {}", schema.getFullName());
         schemaToAsset(schema, catalog, databricksLastUpdatedAt).ifPresent(assetCallback::onAssetUpdated);
 
-        var tables = workspaceClient.tables().list(schema.getCatalogName(), schema.getName());
+        var tables = workspaceClient.tables().list(new ListTablesRequest()
+            .setCatalogName(schema.getCatalogName())
+            .setSchemaName(schema.getName())
+            .setMaxResults(SERVER_CONFIGURED_PAGE_SIZE)
+            .setOmitProperties(true)
+            .setOmitUsername(true));
         long tablesCount = 0;
         for (var table : tables) {
+          if (!includeTable(table)) {
+            log.debug("Skipping table {}", table.getFullName());
+            continue;
+          }
+
           tableToAsset(table, schema, databricksLastUpdatedAt).ifPresent(assetCallback::onAssetUpdated);
 
           databricksLastUpdatedAtThisRunMax = Math.max(databricksLastUpdatedAtThisRunMax, table.getUpdatedAt());
@@ -216,22 +245,22 @@ public class DatabricksAssetsSupplier implements EntropyDataAssetsProvider {
   }
 
   protected boolean includeCatalog(CatalogInfo catalog) {
-    if (catalog.getCatalogType() == CatalogType.MANAGED_CATALOG) {
-      return true;
+    if (catalog.getCatalogType() != CatalogType.MANAGED_CATALOG) {
+      return false;
     }
 
-    return false;
+    return catalogFilter.matches(catalog.getName());
   }
 
   protected boolean includeSchema(SchemaInfo schema) {
     if (Objects.equals(schema.getName(), "information_schema")) {
       return false;
     }
-    return true;
+    return schemaFilter.matches(schema.getName());
   }
 
   protected boolean includeTable(TableInfo table) {
-    return true;
+    return tableFilter.matches(table.getName());
   }
 
   private boolean alreadySynchronized(CatalogInfo catalogInfo, Long databricksLastUpdatedAt) {

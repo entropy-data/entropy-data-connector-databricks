@@ -1,6 +1,7 @@
 package entropydata.databricks;
 
 import java.time.Duration;
+import java.util.List;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 
 @ConfigurationProperties(prefix = "entropydata.client.databricks")
@@ -31,7 +32,17 @@ public record DatabricksProperties(
   public record AssetsProperties(
       Boolean enabled,
       String connectorid,
-      Duration pollinterval
+      Duration pollinterval,
+      FilterProperties catalogs,
+      FilterProperties schemas,
+      FilterProperties tables
+  ) {
+
+  }
+
+  public record FilterProperties(
+      List<String> include,
+      List<String> exclude
   ) {
 
   }

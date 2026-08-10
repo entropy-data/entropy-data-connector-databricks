@@ -43,6 +43,45 @@ docker run \
 | `ENTROPYDATA_CLIENT_DATABRICKS_ASSETS_CONNECTORID`                                   | `databricks-assets`                | Identifier for the Databricks assets connector.                                                                                          |
 | `ENTROPYDATA_CLIENT_DATABRICKS_ASSETS_ENABLED`                                       | `true`                             | Indicates whether Databricks asset tracking is enabled.                                                                              |
 | `ENTROPYDATA_CLIENT_DATABRICKS_ASSETS_POLLINTERVAL`                                  | `PT10M`                            | Polling interval for Databricks asset updates, in ISO 8601 duration format.                                                          |
+| `ENTROPYDATA_CLIENT_DATABRICKS_ASSETS_CATALOGS_INCLUDE`                              |                                    | Comma-separated glob patterns of catalog names to synchronize, e.g. `prod,analytics_*`. Empty means all catalogs.                    |
+| `ENTROPYDATA_CLIENT_DATABRICKS_ASSETS_CATALOGS_EXCLUDE`                              |                                    | Comma-separated glob patterns of catalog names to skip, e.g. `dev_*,staging`. Applied after the include patterns.                    |
+| `ENTROPYDATA_CLIENT_DATABRICKS_ASSETS_SCHEMAS_INCLUDE`                               |                                    | Comma-separated glob patterns of schema names to synchronize. Empty means all schemas.                                               |
+| `ENTROPYDATA_CLIENT_DATABRICKS_ASSETS_SCHEMAS_EXCLUDE`                               |                                    | Comma-separated glob patterns of schema names to skip, e.g. `tmp_*`. Applied after the include patterns.                             |
+| `ENTROPYDATA_CLIENT_DATABRICKS_ASSETS_TABLES_INCLUDE`                                |                                    | Comma-separated glob patterns of table names to synchronize. Empty means all tables.                                                 |
+| `ENTROPYDATA_CLIENT_DATABRICKS_ASSETS_TABLES_EXCLUDE`                                |                                    | Comma-separated glob patterns of table names to skip, e.g. `*_backup`. Applied after the include patterns.                           |
+
+Patterns are matched case-insensitively against the plain catalog, schema, or table name, not against the fully qualified name.
+Only managed Unity Catalog catalogs are synchronized, and the `information_schema` is always skipped.
+
+### Scoping the Synchronization
+
+Large workspaces synchronize faster, and use less memory, when development or staging catalogs are excluded:
+
+```
+-e ENTROPYDATA_CLIENT_DATABRICKS_ASSETS_CATALOGS_EXCLUDE='dev_*,staging'
+```
+
+Catalogs are filtered before their schemas and tables are listed, so excluded catalogs cost no API calls at all.
+
+## Resources
+
+The connector needs **at least 1 GB of container memory**. The image sets a heap limit accordingly:
+
+```
+JAVA_TOOL_OPTIONS=-XX:MaxRAMPercentage=60 -XX:+ExitOnOutOfMemoryError
+```
+
+Without `MaxRAMPercentage`, the JVM caps the heap at 25% of the container memory, which is not enough to synchronize large
+Unity catalogs. `ExitOnOutOfMemoryError` terminates the container instead of leaving it running with a dead synchronization
+thread, so that your orchestrator can restart it.
+
+Setting `JAVA_TOOL_OPTIONS` at runtime **replaces** these flags rather than adding to them. Repeat the flags you want to keep:
+
+```
+-e JAVA_TOOL_OPTIONS='-XX:MaxRAMPercentage=60 -XX:+ExitOnOutOfMemoryError -javaagent:/agent.jar'
+```
+
+Expect the container to use around 60% of its memory limit under load. Adjust memory alarms accordingly.
 
 
 ## Access Management Flow
