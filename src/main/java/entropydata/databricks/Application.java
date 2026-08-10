@@ -68,17 +68,25 @@ public class Application {
     return entropyDataEventListener;
   }
 
+  @Bean
+  @ConditionalOnProperty(value = "entropydata.client.databricks.assets.enabled", havingValue = "true")
+  public AssetsSynchronizationHealth assetsSynchronizationHealth(DatabricksProperties databricksProperties) {
+    return new AssetsSynchronizationHealth(databricksProperties.assets().pollinterval());
+  }
+
   @Bean(destroyMethod = "stop")
   @ConditionalOnProperty(value = "entropydata.client.databricks.assets.enabled", havingValue = "true")
   public EntropyDataAssetsSynchronizer entropyDataAssetsSynchronizer(
       DatabricksProperties databricksProperties,
       EntropyDataClient client,
       WorkspaceClient workspaceClient,
+      AssetsSynchronizationHealth assetsSynchronizationHealth,
       TaskExecutor taskExecutor) {
     var connectorid = databricksProperties.assets().connectorid();
     var stateRepository = new EntropyDataStateRepositoryRemote(connectorid, client);
     var assetsSupplier = new DatabricksAssetsSupplier(workspaceClient, stateRepository, databricksProperties);
-    var entropyDataAssetsSynchronizer = new EntropyDataAssetsSynchronizer(connectorid, client, assetsSupplier);
+    var entropyDataAssetsSynchronizer = new EntropyDataAssetsSynchronizer(connectorid, client,
+        assetsSynchronizationHealth.wrap(assetsSupplier));
     if (databricksProperties.assets().pollinterval() != null) {
       entropyDataAssetsSynchronizer.setDelay(databricksProperties.assets().pollinterval());
     }
