@@ -93,6 +93,21 @@ class DatabricksAssetsSupplierTest {
   }
 
   @Test
+  void takesTheWatermarkFromTheStartOfTheRunInsteadOfTheEntitiesItSaw() {
+    var before = System.currentTimeMillis();
+
+    supplier(assets(null, null, null)).fetchAssets(collectAssets(new ArrayList<>()));
+
+    var state = ArgumentCaptor.forClass(Map.class);
+    verify(stateRepository).saveState(state.capture());
+    var watermark = (Long) state.getValue().get("lastUpdatedAt");
+
+    // Anything modified while the run was in progress must be read again by the next run
+    assertThat(watermark).isLessThanOrEqualTo(before);
+    assertThat(watermark).isGreaterThan(before - Duration.ofHours(2).toMillis());
+  }
+
+  @Test
   void skipsCatalogsThatAreNotIncluded() {
     var assets = new ArrayList<Asset>();
     var properties = assets(new FilterProperties(List.of("analytics_*"), List.of()), null, null);

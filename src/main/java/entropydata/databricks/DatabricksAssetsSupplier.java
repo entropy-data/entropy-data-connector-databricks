@@ -14,6 +14,7 @@ import entropydata.sdk.client.model.Asset;
 import entropydata.sdk.client.model.AssetColumn;
 import entropydata.sdk.client.model.AssetInfo;
 import entropydata.sdk.client.model.AssetRelationshipsInner;
+import java.time.Duration;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -30,6 +31,14 @@ public class DatabricksAssetsSupplier implements EntropyDataAssetsProvider {
    * requests the server configured page size, so the SDK paginates instead.
    */
   private static final long SERVER_CONFIGURED_PAGE_SIZE = 0L;
+
+  /**
+   * A run reads catalogs, schemas, and tables over a longer period, and anything modified after it has been read must still be picked up
+   * by the next run. The watermark is therefore taken before the first entity is read, minus an overlap that absorbs clock differences
+   * between this process and Databricks. Entities within the overlap are read again and compared, which does not write anything unless
+   * they actually changed.
+   */
+  private static final Duration WATERMARK_OVERLAP = Duration.ofHours(1);
 
   private final WorkspaceClient workspaceClient;
   private final EntropyDataStateRepository entropyDataStateRepository;
@@ -51,7 +60,7 @@ public class DatabricksAssetsSupplier implements EntropyDataAssetsProvider {
   @Override
   public void fetchAssets(AssetCallback assetCallback) {
     final var databricksLastUpdatedAt = getLastUpdatedAt();
-    var databricksLastUpdatedAtThisRunMax = databricksLastUpdatedAt;
+    final var watermark = System.currentTimeMillis() - WATERMARK_OVERLAP.toMillis();
 
     var catalogs = workspaceClient.catalogs().list(new ListCatalogsRequest()
         .setMaxResults(SERVER_CONFIGURED_PAGE_SIZE));
@@ -92,7 +101,6 @@ public class DatabricksAssetsSupplier implements EntropyDataAssetsProvider {
 
           tableToAsset(table, schema, databricksLastUpdatedAt).ifPresent(assetCallback::onAssetUpdated);
 
-          databricksLastUpdatedAtThisRunMax = Math.max(databricksLastUpdatedAtThisRunMax, table.getUpdatedAt());
           tablesCount++;
         }
         log.info("Synchronized {} tables in schema {}", tablesCount, schema.getFullName());
@@ -101,7 +109,7 @@ public class DatabricksAssetsSupplier implements EntropyDataAssetsProvider {
       log.info("Synchronized {} schemas in catalog {}", schemasCount, catalog.getFullName());
     }
 
-    setLastUpdatedAt(databricksLastUpdatedAtThisRunMax);
+    setLastUpdatedAt(watermark);
   }
 
   private Long getLastUpdatedAt() {
