@@ -71,6 +71,23 @@ class DatabricksAssetsSupplierTest {
   }
 
   @Test
+  void includesBrowseOnlyObjectsOnEveryLevel() {
+    supplier(assets(null, null, null)).fetchAssets(collectAssets(new ArrayList<>()));
+
+    var catalogsRequest = ArgumentCaptor.forClass(ListCatalogsRequest.class);
+    verify(workspaceClient.catalogs()).list(catalogsRequest.capture());
+    assertThat(catalogsRequest.getValue().getIncludeBrowse()).isTrue();
+
+    var schemasRequest = ArgumentCaptor.forClass(ListSchemasRequest.class);
+    verify(workspaceClient.schemas()).list(schemasRequest.capture());
+    assertThat(schemasRequest.getValue().getIncludeBrowse()).isTrue();
+
+    var tablesRequest = ArgumentCaptor.forClass(ListTablesRequest.class);
+    verify(workspaceClient.tables(), org.mockito.Mockito.atLeastOnce()).list(tablesRequest.capture());
+    assertThat(tablesRequest.getValue().getIncludeBrowse()).isTrue();
+  }
+
+  @Test
   void synchronizesEverythingWhenNoFiltersAreConfigured() {
     var assets = new ArrayList<Asset>();
 

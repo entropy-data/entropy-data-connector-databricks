@@ -63,6 +63,7 @@ public class DatabricksAssetsSupplier implements EntropyDataAssetsProvider {
     final var watermark = System.currentTimeMillis() - WATERMARK_OVERLAP.toMillis();
 
     var catalogs = workspaceClient.catalogs().list(new ListCatalogsRequest()
+        .setIncludeBrowse(true)
         .setMaxResults(SERVER_CONFIGURED_PAGE_SIZE));
     for (var catalog : catalogs) {
       if (!includeCatalog(catalog)) {
@@ -75,6 +76,7 @@ public class DatabricksAssetsSupplier implements EntropyDataAssetsProvider {
 
       var schemas = workspaceClient.schemas().list(new ListSchemasRequest()
           .setCatalogName(catalog.getFullName())
+          .setIncludeBrowse(true)
           .setMaxResults(SERVER_CONFIGURED_PAGE_SIZE));
       long schemasCount = 0;
       for (var schema : schemas) {
@@ -89,6 +91,7 @@ public class DatabricksAssetsSupplier implements EntropyDataAssetsProvider {
         var tables = workspaceClient.tables().list(new ListTablesRequest()
             .setCatalogName(schema.getCatalogName())
             .setSchemaName(schema.getName())
+            .setIncludeBrowse(true)
             .setMaxResults(SERVER_CONFIGURED_PAGE_SIZE)
             .setOmitProperties(true)
             .setOmitUsername(true));
