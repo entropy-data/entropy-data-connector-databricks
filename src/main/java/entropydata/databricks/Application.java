@@ -88,6 +88,7 @@ public class Application {
       TaskExecutor taskExecutor,
       ObjectProvider<BuildProperties> buildProperties) {
     var connectorid = databricksProperties.assets().connectorid();
+    AssetOwner.requireExistingTeam(client, databricksProperties.assets());
     var stateRepository = new EntropyDataStateRepositoryRemote(connectorid, client);
     var assetsSupplier = new DatabricksAssetsSupplier(workspaceClient, stateRepository, databricksProperties);
     var entropyDataAssetsSynchronizer = new EntropyDataAssetsSynchronizer(connectorid, client,

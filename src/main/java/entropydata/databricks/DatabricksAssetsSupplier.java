@@ -46,6 +46,7 @@ public class DatabricksAssetsSupplier implements EntropyDataAssetsProvider {
   private final NameFilter catalogFilter;
   private final NameFilter schemaFilter;
   private final NameFilter tableFilter;
+  private final String owner;
 
   public DatabricksAssetsSupplier(WorkspaceClient workspaceClient, EntropyDataStateRepository entropyDataStateRepository,
       DatabricksProperties databricksProperties) {
@@ -55,6 +56,7 @@ public class DatabricksAssetsSupplier implements EntropyDataAssetsProvider {
     this.catalogFilter = NameFilter.of(databricksProperties.assets().catalogs());
     this.schemaFilter = NameFilter.of(databricksProperties.assets().schemas());
     this.tableFilter = NameFilter.of(databricksProperties.assets().tables());
+    this.owner = AssetOwner.teamId(databricksProperties.assets());
   }
 
   @Override
@@ -164,9 +166,11 @@ public class DatabricksAssetsSupplier implements EntropyDataAssetsProvider {
         .info(new AssetInfo()
             .name(catalog.getName())
             .source("unity")
+            .sourceId(getCatalogNameAsIdAsWorkaround(catalog))
             .qualifiedName(catalog.getFullName())
             .type("unity_catalog")
             .status("active")
+            .owner(owner)
             .description(catalog.getComment()))
         .putPropertiesItem("host", databricksProperties.workspace().host())
         .putPropertiesItem("catalogType", catalog.getCatalogType().toString())
@@ -199,9 +203,11 @@ public class DatabricksAssetsSupplier implements EntropyDataAssetsProvider {
         .info(new AssetInfo()
             .name(schema.getName())
             .source("unity")
+            .sourceId(schema.getSchemaId())
             .qualifiedName(schema.getFullName())
             .type("unity_schema")
             .status("active")
+            .owner(owner)
             .description(schema.getComment()))
         .putPropertiesItem("host", databricksProperties.workspace().host())
         .putPropertiesItem("catalog", schema.getCatalogName())
@@ -231,9 +237,11 @@ public class DatabricksAssetsSupplier implements EntropyDataAssetsProvider {
         .info(new AssetInfo()
             .name(table.getName())
             .source("unity")
+            .sourceId(table.getTableId())
             .qualifiedName(table.getFullName())
             .type("unity_table")
             .status("active")
+            .owner(owner)
             .description(table.getComment()))
         .putPropertiesItem("host", databricksProperties.workspace().host())
         .putPropertiesItem("catalog", table.getCatalogName())
