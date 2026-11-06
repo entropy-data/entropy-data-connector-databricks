@@ -31,8 +31,8 @@ final class AssetOwner {
       client.getTeamsApi().getTeam(teamId);
     } catch (ApiException e) {
       if (e.getCode() == 404) {
-        throw new IllegalStateException("The asset owner " + teamId
-            + " (ENTROPYDATA_CLIENT_DATABRICKS_ASSETS_OWNER) is not the id of a team in Entropy Data.", e);
+        throw new IllegalStateException("The asset owner " + teamId + " (ENTROPYDATA_CLIENT_DATABRICKS_ASSETS_OWNER) is not the ID "
+            + "of a team in Entropy Data. Use the ID shown on the team's page, not the team's display name.", e);
       }
       throw e;
     }

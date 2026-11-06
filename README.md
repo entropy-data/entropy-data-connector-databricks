@@ -67,7 +67,7 @@ cosign verify entropydata/entropy-data-connector-databricks:0.3.0 \
 | `ENTROPYDATA_CLIENT_DATABRICKS_ASSETS_CONNECTORID`                                   | `databricks-assets`                | Identifier for the Databricks assets connector.                                                                                          |
 | `ENTROPYDATA_CLIENT_DATABRICKS_ASSETS_ENABLED`                                       | `true`                             | Indicates whether Databricks asset tracking is enabled.                                                                              |
 | `ENTROPYDATA_CLIENT_DATABRICKS_ASSETS_POLLINTERVAL`                                  | `PT10M`                            | Polling interval for Databricks asset updates, in ISO 8601 duration format.                                                          |
-| `ENTROPYDATA_CLIENT_DATABRICKS_ASSETS_OWNER`                                         |                                    | Id of the Entropy Data team that owns new assets, e.g. `data-platform`. An owner set in Entropy Data is kept. Empty means no owner. The connector does not start if the team does not exist. |
+| `ENTROPYDATA_CLIENT_DATABRICKS_ASSETS_OWNER`                                         |                                    | The ID of the Entropy Data team that owns new assets, e.g. `data-platform`. This is the team's ID shown on its page in Entropy Data and used as `owner` in the API, not the team's display name. An owner set in Entropy Data is kept. Empty means no owner. The connector does not start if no team has this ID. |
 | `ENTROPYDATA_CLIENT_DATABRICKS_ASSETS_CATALOGS_INCLUDE`                              |                                    | Comma-separated glob patterns of catalog names to synchronize, e.g. `prod,analytics_*`. Empty means all catalogs.                    |
 | `ENTROPYDATA_CLIENT_DATABRICKS_ASSETS_CATALOGS_EXCLUDE`                              |                                    | Comma-separated glob patterns of catalog names to skip, e.g. `dev_*,staging`. Applied after the include patterns.                    |
 | `ENTROPYDATA_CLIENT_DATABRICKS_ASSETS_SCHEMAS_INCLUDE`                               |                                    | Comma-separated glob patterns of schema names to synchronize. Empty means all schemas.                                               |
@@ -91,8 +91,9 @@ Catalogs are filtered before their schemas and tables are listed, so excluded ca
 ### Owners and Assets Created in Entropy Data
 
 Entropy Data only lets assets with an owner be edited, for example to assign tags. Set `ENTROPYDATA_CLIENT_DATABRICKS_ASSETS_OWNER`
-to give new assets an owner team. An owner set in Entropy Data, through the UI or the API, is kept: the connector's owner only
-fills an empty one. Tags and links set in Entropy Data are kept as well.
+to the ID of a team to give new assets an owner. The ID is shown on the team's page in Entropy Data, for example
+`data-platform`; the team's display name does not work. An owner set in Entropy Data, through the UI or the API, is kept: the
+connector's owner only fills an empty one. Tags and links set in Entropy Data are kept as well.
 
 An asset can be created in Entropy Data before its table exists in Databricks, for example to assign it to an output port
 upfront. When the table appears, the connector updates that asset instead of creating a second one, provided the asset has:

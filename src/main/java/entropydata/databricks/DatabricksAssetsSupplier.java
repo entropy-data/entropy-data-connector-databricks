@@ -162,11 +162,11 @@ public class DatabricksAssetsSupplier implements EntropyDataAssetsProvider {
     log.info("Synchronizing catalog {}", catalog.getFullName());
 
     Asset asset = new Asset()
-        .id(getCatalogNameAsIdAsWorkaround(catalog))
+        .id(catalogAssetId(catalog))
         .info(new AssetInfo()
             .name(catalog.getName())
             .source("unity")
-            .sourceId(getCatalogNameAsIdAsWorkaround(catalog))
+            .sourceId(catalogAssetId(catalog))
             .qualifiedName(catalog.getFullName())
             .type("unity_catalog")
             .status("active")
@@ -179,8 +179,11 @@ public class DatabricksAssetsSupplier implements EntropyDataAssetsProvider {
     return Optional.of(asset);
   }
 
-  private static String getCatalogNameAsIdAsWorkaround(CatalogInfo catalog) {
-    // TODO use catalog id when it becomes available
+  /**
+   * Unity Catalog has no id for a catalog, unlike {@code schema_id} and {@code table_id}, so the name stands in. A renamed catalog
+   * therefore becomes a new asset.
+   */
+  private static String catalogAssetId(CatalogInfo catalog) {
     return catalog.getName();
   }
 
@@ -213,7 +216,7 @@ public class DatabricksAssetsSupplier implements EntropyDataAssetsProvider {
         .putPropertiesItem("catalog", schema.getCatalogName())
         .putPropertiesItem("catalogType", schema.getCatalogType())
         .putPropertiesItem("schema", schema.getName())
-        .relationships(List.of(new AssetRelationshipsInner().relationshipType("parent").assetId(getCatalogNameAsIdAsWorkaround(catalog))))
+        .relationships(List.of(new AssetRelationshipsInner().relationshipType("parent").assetId(catalogAssetId(catalog))))
         .putPropertiesItem("updatedAt", schema.getUpdatedAt().toString());
 
     return Optional.of(asset);
