@@ -46,6 +46,7 @@ public class DatabricksAssetsSupplier implements EntropyDataAssetsProvider {
   private final NameFilter catalogFilter;
   private final NameFilter schemaFilter;
   private final NameFilter tableFilter;
+  private final String owner;
 
   public DatabricksAssetsSupplier(WorkspaceClient workspaceClient, EntropyDataStateRepository entropyDataStateRepository,
       DatabricksProperties databricksProperties) {
@@ -55,6 +56,7 @@ public class DatabricksAssetsSupplier implements EntropyDataAssetsProvider {
     this.catalogFilter = NameFilter.of(databricksProperties.assets().catalogs());
     this.schemaFilter = NameFilter.of(databricksProperties.assets().schemas());
     this.tableFilter = NameFilter.of(databricksProperties.assets().tables());
+    this.owner = AssetOwner.teamId(databricksProperties.assets());
   }
 
   @Override
@@ -160,13 +162,15 @@ public class DatabricksAssetsSupplier implements EntropyDataAssetsProvider {
     log.info("Synchronizing catalog {}", catalog.getFullName());
 
     Asset asset = new Asset()
-        .id(getCatalogNameAsIdAsWorkaround(catalog))
+        .id(catalogAssetId(catalog))
         .info(new AssetInfo()
             .name(catalog.getName())
             .source("unity")
+            .sourceId(catalogAssetId(catalog))
             .qualifiedName(catalog.getFullName())
             .type("unity_catalog")
             .status("active")
+            .owner(owner)
             .description(catalog.getComment()))
         .putPropertiesItem("host", databricksProperties.workspace().host())
         .putPropertiesItem("catalogType", catalog.getCatalogType().toString())
@@ -175,8 +179,11 @@ public class DatabricksAssetsSupplier implements EntropyDataAssetsProvider {
     return Optional.of(asset);
   }
 
-  private static String getCatalogNameAsIdAsWorkaround(CatalogInfo catalog) {
-    // TODO use catalog id when it becomes available
+  /**
+   * Unity Catalog has no id for a catalog, unlike {@code schema_id} and {@code table_id}, so the name stands in. A renamed catalog
+   * therefore becomes a new asset.
+   */
+  private static String catalogAssetId(CatalogInfo catalog) {
     return catalog.getName();
   }
 
@@ -199,15 +206,17 @@ public class DatabricksAssetsSupplier implements EntropyDataAssetsProvider {
         .info(new AssetInfo()
             .name(schema.getName())
             .source("unity")
+            .sourceId(schema.getSchemaId())
             .qualifiedName(schema.getFullName())
             .type("unity_schema")
             .status("active")
+            .owner(owner)
             .description(schema.getComment()))
         .putPropertiesItem("host", databricksProperties.workspace().host())
         .putPropertiesItem("catalog", schema.getCatalogName())
         .putPropertiesItem("catalogType", schema.getCatalogType())
         .putPropertiesItem("schema", schema.getName())
-        .relationships(List.of(new AssetRelationshipsInner().relationshipType("parent").assetId(getCatalogNameAsIdAsWorkaround(catalog))))
+        .relationships(List.of(new AssetRelationshipsInner().relationshipType("parent").assetId(catalogAssetId(catalog))))
         .putPropertiesItem("updatedAt", schema.getUpdatedAt().toString());
 
     return Optional.of(asset);
@@ -231,9 +240,11 @@ public class DatabricksAssetsSupplier implements EntropyDataAssetsProvider {
         .info(new AssetInfo()
             .name(table.getName())
             .source("unity")
+            .sourceId(table.getTableId())
             .qualifiedName(table.getFullName())
             .type("unity_table")
             .status("active")
+            .owner(owner)
             .description(table.getComment()))
         .putPropertiesItem("host", databricksProperties.workspace().host())
         .putPropertiesItem("catalog", table.getCatalogName())

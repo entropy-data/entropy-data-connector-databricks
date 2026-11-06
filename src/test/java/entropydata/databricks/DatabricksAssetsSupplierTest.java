@@ -1,6 +1,7 @@
 package entropydata.databricks;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.groups.Tuple.tuple;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.RETURNS_DEEP_STUBS;
 import static org.mockito.Mockito.mock;
@@ -125,6 +126,29 @@ class DatabricksAssetsSupplierTest {
   }
 
   @Test
+  void identifiesEveryAssetByItsUnityCatalogIdAndNamesTheConfiguredOwner() {
+    var assets = new ArrayList<Asset>();
+
+    supplier(assets(null, null, null, "team-data-platform")).fetchAssets(collectAssets(assets));
+
+    assertThat(assets).extracting(asset -> asset.getInfo().getQualifiedName(), asset -> asset.getInfo().getSourceId())
+        .contains(
+            tuple("prod", "prod"),
+            tuple("prod.sales", "schema-sales"),
+            tuple("prod.sales.orders", "table-orders"));
+    assertThat(assets).allSatisfy(asset -> assertThat(asset.getInfo().getOwner()).isEqualTo("team-data-platform"));
+  }
+
+  @Test
+  void leavesTheOwnerEmptyWhenNoneIsConfigured() {
+    var assets = new ArrayList<Asset>();
+
+    supplier(assets(null, null, null, " ")).fetchAssets(collectAssets(assets));
+
+    assertThat(assets).isNotEmpty().allSatisfy(asset -> assertThat(asset.getInfo().getOwner()).isNull());
+  }
+
+  @Test
   void skipsCatalogsThatAreNotIncluded() {
     var assets = new ArrayList<Asset>();
     var properties = assets(new FilterProperties(List.of("analytics_*"), List.of()), null, null);
@@ -144,7 +168,11 @@ class DatabricksAssetsSupplierTest {
   }
 
   private static AssetsProperties assets(FilterProperties catalogs, FilterProperties schemas, FilterProperties tables) {
-    return new AssetsProperties(true, "databricks-assets", Duration.parse("PT10M"), catalogs, schemas, tables);
+    return assets(catalogs, schemas, tables, null);
+  }
+
+  private static AssetsProperties assets(FilterProperties catalogs, FilterProperties schemas, FilterProperties tables, String owner) {
+    return new AssetsProperties(true, "databricks-assets", Duration.parse("PT10M"), catalogs, schemas, tables, owner);
   }
 
   private static SchemaInfo schema(String name) {

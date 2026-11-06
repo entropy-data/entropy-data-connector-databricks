@@ -35,7 +35,8 @@ public record DatabricksProperties(
       Duration pollinterval,
       FilterProperties catalogs,
       FilterProperties schemas,
-      FilterProperties tables
+      FilterProperties tables,
+      String owner
   ) {
 
   }
