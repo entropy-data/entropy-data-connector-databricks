@@ -92,8 +92,8 @@ Catalogs are filtered before their schemas and tables are listed, so excluded ca
 
 Entropy Data only lets assets with an owner be edited, for example to assign tags. Set `ENTROPYDATA_CLIENT_DATABRICKS_ASSETS_OWNER`
 to the ID of a team to give new assets an owner. The ID is shown on the team's page in Entropy Data, for example
-`data-platform`; the team's display name does not work. An owner set in Entropy Data, through the UI or the API, is kept: the
-connector's owner only fills an empty one. Tags and links set in Entropy Data are kept as well.
+`data-platform`; the team's display name does not work. An owner the asset already has in Entropy Data, for example set
+through the API, is kept: the connector's owner only fills an empty one. Tags and links set in Entropy Data are kept as well.
 
 An asset can be created in Entropy Data before its table exists in Databricks, for example to assign it to an output port
 upfront. When the table appears, the connector updates that asset instead of creating a second one, provided the asset has:
